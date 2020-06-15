@@ -20,7 +20,11 @@ def add_madam_args(parser):
     """
 
     parser.add_argument(
-        "--madam-prefix", required=False, default="toast", help="Output map prefix"
+        "--madam-prefix",
+        required=False,
+        default="toast",
+        help="Output map prefix",
+        dest="mapmaker_prefix",
     )
     parser.add_argument(
         "--madam-iter-max",
@@ -28,6 +32,7 @@ def add_madam_args(parser):
         default=1000,
         type=np.int,
         help="Maximum number of CG iterations in Madam",
+        dest="mapmaker_iter_max",
     )
     parser.add_argument(
         "--madam-precond-width",
@@ -35,6 +40,7 @@ def add_madam_args(parser):
         default=100,
         type=np.int,
         help="Width of the Madam band preconditioner",
+        dest="mapmaker_precond_width",
     )
     parser.add_argument(
         "--madam-precond-width-min",
@@ -54,6 +60,7 @@ def add_madam_args(parser):
         default=10000.0,
         type=np.float,
         help="Destriping baseline length (seconds)",
+        dest="mapmaker_baseline_length",
     )
     parser.add_argument(
         "--madam-baseline-order",
@@ -68,9 +75,13 @@ def add_madam_args(parser):
         default=False,
         action="store_true",
         help="Destripe with the noise filter enabled",
+        dest="mapmaker_noisefilter",
     )
     parser.add_argument(
         "--madam-parfile", required=False, default=None, help="Madam parameter file"
+    )
+    parser.add_argument(
+        "--madam-mask", required=False, help="Destriping mask", dest="mapmaker_mask",
     )
 
     parser.add_argument(
@@ -223,6 +234,17 @@ def add_madam_args(parser):
         )
     except argparse.ArgumentError:
         pass
+    # `nside_submap` may already be added
+    try:
+        parser.add_argument(
+            "--nside_submap",
+            required=False,
+            default=16,
+            type=np.int,
+            help="Number of submaps is 12 * nside_submap ** 2",
+        )
+    except argparse.ArgumentError:
+        pass
     # Common flag mask may already be added
     try:
         parser.add_argument(
@@ -257,7 +279,7 @@ def setup_madam(args):
     pars = {}
 
     cross = args.nside // 2
-    submap = 16
+    submap = args.nside_submap
     if submap > args.nside:
         submap = args.nside
 
@@ -285,6 +307,8 @@ def setup_madam(args):
         # only enough memory to communicate with one process at a time.
         pars["concatenate_messages"] = False
         pars["allreduce"] = False
+    if args.mapmaker_mask:
+        pars["file_inmask"] = args.mapmaker_mask
     pars["reassign_submaps"] = True
     pars["pixlim_cross"] = 1e-3
     pars["pixmode_cross"] = 2
@@ -308,17 +332,17 @@ def setup_madam(args):
                         key, value = result.group(1), result.group(2)
                         pars[key] = value
 
-    pars["base_first"] = args.madam_baseline_length
+    pars["base_first"] = args.mapmaker_baseline_length
     pars["basis_order"] = args.madam_baseline_order
     # Adaptive preconditioner width
     width_min = args.madam_precond_width_min
     width_max = args.madam_precond_width_max
     if width_min is None:
         # madam-precond-width has a default value
-        width_min = args.madam_precond_width
+        width_min = args.mapmaker_precond_width
     if width_max is None:
         # madam-precond-width has a default value
-        width_max = args.madam_precond_width
+        width_max = args.mapmaker_precond_width
     if width_min > width_max:
         # it is not an error for these two to match
         width_min = width_max
@@ -326,7 +350,7 @@ def setup_madam(args):
     pars["precond_width_max"] = width_max
     #
     pars["nside_map"] = args.nside
-    if args.madam_noisefilter:
+    if args.mapmaker_noisefilter:
         if args.madam_baseline_order != 0:
             raise RuntimeError(
                 "Madam cannot build a noise filter when baseline"
@@ -336,8 +360,8 @@ def setup_madam(args):
     else:
         pars["kfilter"] = False
     pars["fsample"] = args.sample_rate
-    pars["iter_max"] = args.madam_iter_max
-    pars["file_root"] = args.madam_prefix
+    pars["iter_max"] = args.mapmaker_iter_max
+    pars["file_root"] = args.mapmaker_prefix
 
     # Translate boolean values.  Madam knows how to do this but it
     # simplifies pipeline_tools/madam.py
@@ -431,7 +455,7 @@ def apply_madam(
             log.info("No Madam outputs requested.  Skipping.")
         return
 
-    if args.madam_noisefilter or not pars["kfirst"]:
+    if args.mapmaker_noisefilter or not pars["kfirst"]:
         # With the noise filter enabled, we want to enforce continuity
         # across the Observation.  Otherwise we fit each interval
         # separately.
@@ -465,7 +489,7 @@ def apply_madam(
         for tele_name, tele_data in telescope_data:
             if len(time_name.split("-")) == 3:
                 # Special rules for daily maps
-                if args.do_daymaps:
+                if not args.do_daymaps:
                     continue
                 if len(telescope_data) > 1 and tele_name == "all":
                     # Skip daily maps over multiple telescopes

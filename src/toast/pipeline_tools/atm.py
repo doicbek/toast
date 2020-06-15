@@ -6,6 +6,7 @@ import argparse
 import os
 
 import numpy as np
+from scipy.constants import h, k
 
 from ..timing import function_timer, Timer
 from ..utils import Logger, Environment
@@ -17,12 +18,14 @@ from ..todmap import OpSimAtmosphere, atm_available_utils
 if atm_available_utils:
     from ..todmap.atm import (
         atm_atmospheric_loading,
+        atm_atmospheric_loading_vec,
         atm_absorption_coefficient,
         atm_absorption_coefficient_vec,
     )
 
 
 XAXIS, YAXIS, ZAXIS = np.eye(3)
+TCMB = 2.725
 
 
 def add_atmosphere_args(parser):
@@ -48,6 +51,20 @@ def add_atmosphere_args(parser):
         action="store_false",
         help="Do not add simulated atmosphere",
         dest="simulate_atmosphere",
+    )
+    parser.add_argument(
+        "--simulate-coarse-atmosphere",
+        required=False,
+        action="store_true",
+        help="Add simulated coarse atmoshere",
+        dest="simulate_coarse_atmosphere",
+    )
+    parser.add_argument(
+        "--no-coarse-atmosphere",
+        required=False,
+        action="store_false",
+        help="Do not add simulated coarse atmosphere",
+        dest="simulate_coarse_atmosphere",
     )
     parser.add_argument(
         "--no-simulate-atmosphere",
@@ -103,9 +120,16 @@ def add_atmosphere_args(parser):
     parser.add_argument(
         "--atm-gain",
         required=False,
-        default=3e-5,
+        default=2e-5,
         type=np.float,
         help="Atmospheric gain factor.",
+    )
+    parser.add_argument(
+        "--atm-gain-coarse",
+        required=False,
+        default=8e-5,
+        type=np.float,
+        help="Coarse atmospheric gain factor.",
     )
     parser.add_argument(
         "--atm-zatm",
@@ -145,14 +169,14 @@ def add_atmosphere_args(parser):
     parser.add_argument(
         "--atm-nelem-sim-max",
         required=False,
-        default=1000,
+        default=10000,
         type=np.int,
         help="controls the size of the simulation slices",
     )
     parser.add_argument(
         "--atm-wind-dist",
         required=False,
-        default=500.0,
+        default=3000.0,
         type=np.float,
         help="Maximum wind drift to simulate without discontinuity",
     )
@@ -190,6 +214,12 @@ def add_atmosphere_args(parser):
         default="atm_cache",
         help="Atmosphere cache directory",
     )
+    parser.add_argument(
+        "--atm-apply-flags",
+        default=False,
+        action="store_true",
+        help="Only simulate unflagged samples.",
+    )
     # Common flag mask may already be added
     try:
         parser.add_argument(
@@ -222,8 +252,8 @@ def simulate_atmosphere(args, comm, data, mc, cache_name=None, verbose=True):
     if not args.simulate_atmosphere:
         return
     log = Logger.get()
-    tmr = Timer()
-    tmr.start()
+    timer = Timer()
+    timer.start()
     if comm.world_rank == 0 and verbose:
         log.info("Simulating atmosphere")
         if args.atm_cache and not os.path.isdir(args.atm_cache):
@@ -232,37 +262,68 @@ def simulate_atmosphere(args, comm, data, mc, cache_name=None, verbose=True):
             except FileExistsError:
                 pass
 
+    # TK:  is this right?  Or do we want to break out options for different types of
+    # verbosity?
+    write_debug = False
+    if args.atm_verbosity > 1:
+        write_debug = True
+
     # Simulate the atmosphere signal
+
     atm = OpSimAtmosphere(
         out=cache_name,
-        realization=mc,
+        realization=2 * mc,
         lmin_center=args.atm_lmin_center,
         lmin_sigma=args.atm_lmin_sigma,
         lmax_center=args.atm_lmax_center,
-        gain=args.atm_gain,
         lmax_sigma=args.atm_lmax_sigma,
+        gain=args.atm_gain,
         zatm=args.atm_zatm,
         zmax=args.atm_zmax,
         xstep=args.atm_xstep,
         ystep=args.atm_ystep,
         zstep=args.atm_zstep,
         nelem_sim_max=args.atm_nelem_sim_max,
-        verbosity=args.atm_verbosity,
         z0_center=args.atm_z0_center,
         z0_sigma=args.atm_z0_sigma,
-        apply_flags=False,
+        apply_flags=args.atm_apply_flags,
         common_flag_mask=args.common_flag_mask,
         cachedir=args.atm_cache,
-        flush=args.flush,
         wind_dist=args.atm_wind_dist,
+        write_debug=write_debug,
     )
     atm.exec(data)
 
+    if args.simulate_coarse_atmosphere:
+        atm = OpSimAtmosphere(
+            out=cache_name,
+            realization=2 * mc + 1,
+            lmin_center=300,
+            lmin_sigma=0,
+            lmax_center=10000,
+            lmax_sigma=0,
+            gain=args.atm_gain_coarse,
+            zatm=args.atm_zatm,
+            zmax=args.atm_zmax,
+            xstep=50,
+            ystep=50,
+            zstep=50,
+            nelem_sim_max=30000,
+            verbosity=args.atm_verbosity,
+            z0_center=args.atm_z0_center,
+            z0_sigma=args.atm_z0_sigma,
+            apply_flags=args.atm_apply_flags,
+            common_flag_mask=args.common_flag_mask,
+            cachedir=args.atm_cache,
+            wind_dist=10000,
+            write_debug=write_debug,
+        )
+        atm.exec(data)
+
     if comm.comm_world is not None:
         comm.comm_world.barrier()
-    tmr.stop()
     if comm.world_rank == 0:
-        tmr.report("Atmosphere simulation")
+        timer.report_clear("Atmosphere simulation")
     return
 
 
@@ -306,7 +367,10 @@ def scale_atmosphere_by_frequency(
         # Use the entire processing group to sample the absorption
         # coefficient as a function of frequency
         freqmin = 0
-        freqmax = 2 * freq
+        if freq is None:
+            freqmax = 1000
+        else:
+            freqmax = 2 * freq
         nfreq = 1001
         freqstep = (freqmax - freqmin) / (nfreq - 1)
         if todcomm is None:
@@ -330,6 +394,15 @@ def scale_atmosphere_by_frequency(
                     my_freqs[-1],
                     my_nfreq,
                 )
+                my_loading = atm_atmospheric_loading_vec(
+                    altitude,
+                    air_temperature,
+                    surface_pressure,
+                    pwv,
+                    my_freqs[0],
+                    my_freqs[-1],
+                    my_nfreq,
+                )
             else:
                 raise RuntimeError(
                     "Atmosphere utilities from libaatm are not available"
@@ -337,13 +410,15 @@ def scale_atmosphere_by_frequency(
         else:
             my_freqs = np.array([])
             my_absorption = np.array([])
+            my_loading = np.array([])
         if todcomm is None:
             freqs = my_freqs
             absorption = my_absorption
+            loading = my_loading
         else:
             freqs = np.hstack(todcomm.allgather(my_freqs))
             absorption = np.hstack(todcomm.allgather(my_absorption))
-        # loading = atm_atmospheric_loading(altitude, pwv, freq)
+            loading = np.hstack(todcomm.allgather(my_loading))
         for det in tod.local_dets:
             try:
                 # Use detector bandpass from the focalplane
@@ -351,16 +426,40 @@ def scale_atmosphere_by_frequency(
                 width = focalplane[det]["bandwidth_ghz"]
             except Exception:
                 # Use default values for the entire focalplane
+                if freq is None:
+                    raise RuntimeError(
+                        "You must supply the nominal frequency if bandpasses "
+                        "are not available"
+                    )
                 center = freq
                 width = 0.2 * freq
             nstep = 101
             # Interpolate the absorption coefficient to do a top hat
             # integral across the bandpass
             det_freqs = np.linspace(center - width / 2, center + width / 2, nstep)
-            absorption_det = np.mean(np.interp(det_freqs, freqs, absorption))
+            absorption_det = np.interp(det_freqs, freqs, absorption)
+            loading_det = np.interp(det_freqs, freqs, loading)
+            # From brightness to thermodynamic units
+            x = h * det_freqs * 1e9 / k / TCMB
+            rj2cmb = (x / (np.exp(x / 2) - np.exp(-x / 2))) ** -2
+            # Normalize to unity at 150GHz
+            rj2cmb *= 0.5763279042527544
+            absorption_det *= rj2cmb
+            # Average across the bandpass
+            absorption_det = np.mean(absorption_det)
+            loading_det = np.mean(loading_det)
             cachename = "{}_{}".format(cache_name, det)
             ref = tod.cache.reference(cachename)
             ref *= absorption_det
+            # Add loading, accounting for the observing elevation
+            try:
+                # Some TOD classes provide a shortcut to Az/El
+                az, el = tod.read_azel(detector=det)
+            except Exception as e:
+                azelquat = tod.read_pntg(detector=det, azel=True)
+                theta, phi = qa.to_position(azelquat)
+                el = np.pi / 2 - theta
+            ref += loading_det / np.sin(el)
             del ref
 
     if comm.comm_world is not None:

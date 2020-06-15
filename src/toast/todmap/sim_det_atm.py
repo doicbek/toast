@@ -12,7 +12,7 @@ from ..timing import function_timer, Timer
 
 from ..op import Operator
 
-from .atm import available, available_utils, available_mpi
+from .atm import available_utils
 
 if available_utils:
     from .atm import (
@@ -22,11 +22,7 @@ if available_utils:
         atm_atmospheric_loading_vec,
     )
 
-if available:
-    from .atm import AtmSim
-
-if available_mpi:
-    from .atm import AtmSimMPI
+from .atm import AtmSim
 
 from toast.mpi import MPI
 
@@ -65,7 +61,6 @@ class OpSimAtmosphere(Operator):
         ystep (float): size of volume elements in Y direction.
         zstep (float): size of volume elements in Z direction.
         nelem_sim_max (int): controls the size of the simulation slices.
-        verbosity (int): more information is printed for values > 0.
         z0_center (float):  central value of the water vapor
              distribution.
         z0_sigma (float):  sigma of the water vapor distribution.
@@ -88,8 +83,8 @@ class OpSimAtmosphere(Operator):
             volume and creating a new one [meters].
         cachedir (str):  Directory to use for loading and saving
             atmosphere realizations.  Set to None to disable caching.
-        flush (bool):  Flush all print statements
         freq (float):  Observing frequency in GHz.
+        write_debug (bool):  If True, write debugging files.
     """
 
     def __init__(
@@ -107,7 +102,6 @@ class OpSimAtmosphere(Operator):
         ystep=100.0,
         zstep=100.0,
         nelem_sim_max=10000,
-        verbosity=0,
         gain=1,
         z0_center=2000,
         z0_sigma=0,
@@ -116,18 +110,13 @@ class OpSimAtmosphere(Operator):
         common_flag_mask=255,
         flag_name=None,
         flag_mask=255,
-        report_timing=True,
+        report_timing=False,
         wind_dist=10000,
-        cachedir=".",
-        flush=False,
+        cachedir=None,
         freq=None,
+        plot=False,
+        write_debug=False,
     ):
-        if not available:
-            msg = (
-                "TOAST not compiled with atmosphere simulation support (requires "
-                "SuiteSparse)"
-            )
-            raise RuntimeError(msg)
         # Call the parent class constructor
         super().__init__()
 
@@ -145,9 +134,7 @@ class OpSimAtmosphere(Operator):
         self._ystep = ystep
         self._zstep = zstep
         self._nelem_sim_max = nelem_sim_max
-        self._verbosity = verbosity
         self._cachedir = cachedir
-        self._flush = flush
         self._freq = freq
 
         self._z0_center = z0_center
@@ -161,6 +148,8 @@ class OpSimAtmosphere(Operator):
         self._report_timing = report_timing
         self._wind_dist = wind_dist
         self._wind_time = None
+        self._write_debug = write_debug
+        self._plot = plot
 
     @function_timer
     def exec(self, data):
@@ -176,14 +165,6 @@ class OpSimAtmosphere(Operator):
             None
 
         """
-        if data.comm.comm_world is not None:
-            if not available_mpi:
-                msg = (
-                    "MPI is used by the data distribution, but TOAST was not built "
-                    "with MPI-enabled atmosphere simulation support."
-                )
-                raise RuntimeError(msg)
-
         log = Logger.get()
         group = data.comm.group
         for obs in data.obs:
@@ -210,6 +191,8 @@ class OpSimAtmosphere(Operator):
             if comm is not None:
                 tmin_tot = comm.allreduce(tmin, op=MPI.MIN)
                 tmax_tot = comm.allreduce(tmax, op=MPI.MAX)
+            tmin_tot = np.floor(tmin_tot)
+            tmax_tot = np.ceil(tmax_tot)
             weather.set(site, self._realization, tmin_tot)
 
             key1, key2, counter1, counter2 = self._get_rng_keys(obs)
@@ -221,7 +204,7 @@ class OpSimAtmosphere(Operator):
             if comm is not None:
                 comm.Barrier()
             if rank == 0:
-                log.info("{}Setting up atmosphere simulation".format(prefix))
+                log.debug("{}Setting up atmosphere simulation".format(prefix))
 
             # Cache the output common flags
             common_ref = tod.local_common_flags(self._common_flag_name)
@@ -245,7 +228,7 @@ class OpSimAtmosphere(Operator):
                 if comm is not None:
                     comm.Barrier()
                 if rank == 0:
-                    log.info(
+                    log.debug(
                         "{}Instantiating atmosphere for t = {}".format(
                             prefix, tmin - tmin_tot
                         )
@@ -264,6 +247,7 @@ class OpSimAtmosphere(Operator):
                 counter2start = counter2
                 counter1 = counter1start
                 xstart, ystart, zstart = self._xstep, self._ystep, self._zstep
+
                 while rmax < 100000:
                     sim, counter2 = self._simulate_atmosphere(
                         weather,
@@ -283,7 +267,7 @@ class OpSimAtmosphere(Operator):
                         rmax,
                     )
 
-                    if self._verbosity > 15:
+                    if self._plot:
                         self._plot_snapshots(
                             sim,
                             prefix,
@@ -319,7 +303,7 @@ class OpSimAtmosphere(Operator):
                     self._zstep *= np.sqrt(scale)
                     counter1 += 1
 
-                if self._verbosity > 5:
+                if self._write_debug:
                     self._save_tod(
                         obsname, tod, times, istart, nind, ind, comm, common_ref
                     )
@@ -332,7 +316,11 @@ class OpSimAtmosphere(Operator):
                 comm.Barrier()
             if rank == 0:
                 tmr.stop()
-                tmr.report("{}Simulated and observed atmosphere".format(prefix))
+                log.debug(
+                    "{}Simulate and observe atmosphere:  {} seconds".format(
+                        prefix, tmr.seconds()
+                    )
+                )
         return
 
     @function_timer
@@ -452,7 +440,7 @@ class OpSimAtmosphere(Operator):
         with open(fn, "wb") as fout:
             pickle.dump([azgrid, elgrid, my_snapshots], fout)
 
-        print("Snapshots saved in {}".format(fn), flush=True)
+        log.debug("Snapshots saved in {}".format(fn), flush=True)
 
         """
         vmin = comm.allreduce(vmin, op=MPI.MIN)
@@ -565,7 +553,6 @@ class OpSimAtmosphere(Operator):
                 # Handle a rare race condition when two process groups
                 # are creating the cache directories at the same time
                 while True:
-                    print("Creating {}".format(cachedir), flush=True)
                     try:
                         os.makedirs(cachedir, exist_ok=True)
                     except OSError:
@@ -584,8 +571,6 @@ class OpSimAtmosphere(Operator):
         # to compute the range of angles needed for simulating the slab.
 
         (min_az_bore, max_az_bore, min_el_bore, max_el_bore) = tod.scan_range
-        # print("boresight scan range = {}, {}, {}, {}".format(
-        # min_az_bore, max_az_bore, min_el_bore, max_el_bore))
 
         # Use a fixed focal plane radius so that changing the actual
         # set of detectors will not affect the simulated atmosphere.
@@ -651,7 +636,7 @@ class OpSimAtmosphere(Operator):
             tmax = tmax_tot
             istop = times.size
 
-        return istart, istop, tmax
+        return istart, istop, np.ceil(tmax)
 
     @function_timer
     def _simulate_atmosphere(
@@ -690,115 +675,85 @@ class OpSimAtmosphere(Operator):
 
         azmin, azmax, elmin, elmax = scan_range
 
-        if cachedir is None:
-            # The wrapper requires a string argument
-            use_cache = False
-            cachedir = ""
-        else:
-            use_cache = True
-
-        sim = None
-        if comm is None:
-            sim = AtmSim(
-                azmin,
-                azmax,
-                elmin,
-                elmax,
-                tmin,
-                tmax,
-                self._lmin_center,
-                self._lmin_sigma,
-                self._lmax_center,
-                self._lmax_sigma,
-                w_center,
-                0,
-                wdir_center,
-                0,
-                self._z0_center,
-                self._z0_sigma,
-                T0_center,
-                0,
-                self._zatm,
-                self._zmax,
-                self._xstep,
-                self._ystep,
-                self._zstep,
-                self._nelem_sim_max,
-                self._verbosity,
-                key1,
-                key2,
-                counter1,
-                counter2,
-                cachedir,
-                rmin,
-                rmax,
-            )
-        else:
-            sim = AtmSimMPI(
-                azmin,
-                azmax,
-                elmin,
-                elmax,
-                tmin,
-                tmax,
-                self._lmin_center,
-                self._lmin_sigma,
-                self._lmax_center,
-                self._lmax_sigma,
-                w_center,
-                0,
-                wdir_center,
-                0,
-                self._z0_center,
-                self._z0_sigma,
-                T0_center,
-                0,
-                self._zatm,
-                self._zmax,
-                self._xstep,
-                self._ystep,
-                self._zstep,
-                self._nelem_sim_max,
-                self._verbosity,
-                comm,
-                key1,
-                key2,
-                counter1,
-                counter2,
-                cachedir,
-                rmin,
-                rmax,
-            )
+        sim = AtmSim(
+            azmin,
+            azmax,
+            elmin,
+            elmax,
+            tmin,
+            tmax,
+            self._lmin_center,
+            self._lmin_sigma,
+            self._lmax_center,
+            self._lmax_sigma,
+            w_center,
+            0,
+            wdir_center,
+            0,
+            self._z0_center,
+            self._z0_sigma,
+            T0_center,
+            0,
+            self._zatm,
+            self._zmax,
+            self._xstep,
+            self._ystep,
+            self._zstep,
+            self._nelem_sim_max,
+            comm,
+            key1,
+            key2,
+            counter1,
+            counter2,
+            cachedir,
+            rmin,
+            rmax,
+            write_debug=self._write_debug,
+        )
 
         if self._report_timing:
             if comm is not None:
                 comm.Barrier()
             if rank == 0:
-                tmr.report_clear(
-                    "{}OpSimAtmosphere: Initialize atmosphere".format(prefix)
+                tmr.stop()
+                log.debug(
+                    "{}OpSimAtmosphere: Initialize atmosphere: {} seconds".format(
+                        prefix, tmr.seconds()
+                    )
                 )
+                tmr.clear()
+                tmr.start()
 
+        # Check if the cache already exists.
+
+        use_cache = False
+        have_cache = False
         if rank == 0:
-            fname = os.path.join(
-                cachedir,
-                "{}_{}_{}_{}_metadata.txt".format(key1, key2, counter1, counter2),
-            )
-            if use_cache and os.path.isfile(fname):
-                log.info(
+            if cachedir is not None:
+                # We are saving to cache
+                use_cache = True
+            fname = None
+            if cachedir is not None:
+                fname = os.path.join(
+                    cachedir, "{}_{}_{}_{}.h5".format(key1, key2, counter1, counter2)
+                )
+            if (fname is not None) and os.path.isfile(fname):
+                log.debug(
                     "{}Loading the atmosphere for t = {} from {}".format(
                         prefix, tmin - tmin_tot, fname
                     )
                 )
-                cached = True
+                have_cache = True
             else:
-                log.info(
+                log.debug(
                     "{}Simulating the atmosphere for t = {}".format(
-                        prefix, tmin - tmin_tot, fname
+                        prefix, tmin - tmin_tot
                     )
                 )
-                cached = False
+        if comm is not None:
+            use_cache = comm.bcast(use_cache, root=0)
 
-        err = sim.simulate(use_cache)
+        err = sim.simulate(use_cache=use_cache)
         if err != 0:
             raise RuntimeError(prefix + "Simulation failed.")
 
@@ -812,11 +767,18 @@ class OpSimAtmosphere(Operator):
                 comm.Barrier()
             if rank == 0:
                 op = None
-                if cached:
+                if have_cache:
                     op = "Loaded"
                 else:
                     op = "Simulated"
-                tmr.report_clear("{}OpSimAtmosphere: {} atmosphere".format(prefix, op))
+                tmr.stop()
+                log.debug(
+                    "{}OpSimAtmosphere: {} atmosphere: {} seconds".format(
+                        prefix, op, tmr.seconds()
+                    )
+                )
+                tmr.clear()
+                tmr.start()
 
         return sim, counter2
 
@@ -850,7 +812,10 @@ class OpSimAtmosphere(Operator):
         nsamp = tod.local_samples[1]
 
         if rank == 0:
-            log.info("{}Observing the atmosphere".format(prefix))
+            log.debug("{}Observing the atmosphere".format(prefix))
+
+        ngood_tot = 0
+        nbad_tot = 0
 
         for det in tod.local_dets:
             # Cache the output signal
@@ -896,8 +861,6 @@ class OpSimAtmosphere(Operator):
                 az = 2 * np.pi - phi
                 el = np.pi / 2 - theta
 
-            atmdata = np.zeros(ngood, dtype=np.float64)
-
             if np.ptp(az) < np.pi:
                 azmin_det = np.amin(az)
                 azmax_det = np.amax(az)
@@ -939,15 +902,23 @@ class OpSimAtmosphere(Operator):
 
             # Integrate detector signal
 
+            atmdata = np.zeros(ngood, dtype=np.float64)
+
             err = sim.observe(times[ind][good], az, el, atmdata, -1.0)
             if err != 0:
                 # Observing failed
+                bad = np.abs(atmdata) < 1e-30
+                nbad = np.sum(bad)
                 log.error(
-                    "{}OpSimAtmosphere: Observing FAILED. "
-                    "det = {}, rank = {}".format(prefix, det, rank)
+                    "{}OpSimAtmosphere: Observing FAILED for {} ({:.2f} %) samples. "
+                    "det = {}, rank = {}".format(
+                        prefix, nbad, nbad * 100 / ngood, det, rank
+                    )
                 )
-                atmdata[:] = 0
-                flag_ref[ind] = 255
+                atmdata[bad] = 0
+                flag_ref[ind][good][bad] = 255
+                nbad_tot += nbad
+            ngood_tot += ngood
 
             if self._gain:
                 atmdata *= self._gain
@@ -960,10 +931,22 @@ class OpSimAtmosphere(Operator):
 
             del ref
 
+        if comm is not None:
+            comm.Barrier()
+            ngood_tot = comm.reduce(ngood_tot)
+            nbad_tot = comm.reduce(nbad_tot)
+        if rank == 0 and nbad_tot > 0:
+            log.error(
+                "{}: Observe atmosphere FAILED on {:.2f}% of samples".format(
+                    prefix, nbad_tot * 100 / ngood_tot
+                )
+            )
         if self._report_timing:
-            if comm is not None:
-                comm.Barrier()
             if rank == 0:
                 tmr.stop()
-                tmr.report("{}OpSimAtmosphere: Observe atmosphere".format(prefix))
+                log.debug(
+                    "{}OpSimAtmosphere: Observe atmosphere: {} seconds".format(
+                        prefix, tmr.seconds()
+                    )
+                )
         return

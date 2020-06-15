@@ -70,6 +70,7 @@ def parse_arguments(comm):
     pipeline_tools.add_noise_args(parser)
     pipeline_tools.add_gainscrambler_args(parser)
     pipeline_tools.add_madam_args(parser)
+    pipeline_tools.add_mapmaker_args(parser)
     pipeline_tools.add_sky_map_args(parser)
     pipeline_tools.add_pysm_args(parser)
     pipeline_tools.add_sss_args(parser)
@@ -80,6 +81,22 @@ def parse_arguments(comm):
     parser.add_argument(
         "--outdir", required=False, default="out", help="Output directory"
     )
+
+    parser.add_argument(
+        "--madam",
+        required=False,
+        action="store_true",
+        help="Use libmadam for map-making",
+        dest="use_madam",
+    )
+    parser.add_argument(
+        "--no-madam",
+        required=False,
+        action="store_false",
+        help="Do not use libmadam for map-making [default]",
+        dest="use_madam",
+    )
+    parser.set_defaults(use_madam=False)
 
     parser.add_argument(
         "--focalplane",
@@ -219,12 +236,18 @@ def create_observation(args, comm, telescope, ces, verbose=True):
     else:
         ndetrank = 1
 
+    if args.el_nod_deg and (ces.subscan == 0 or args.el_nod_every_scan):
+        el_nod = args.el_nod_deg
+    else:
+        el_nod = None
+
     try:
         tod = TODGround(
             comm.comm_group,
             focalplane.detquats,
             totsamples,
             detranks=ndetrank,
+            boresight_angle=ces.boresight_angle,
             firsttime=ces.start_time,
             rate=args.sample_rate,
             site_lon=site.lon,
@@ -233,9 +256,14 @@ def create_observation(args, comm, telescope, ces, verbose=True):
             azmin=ces.azmin,
             azmax=ces.azmax,
             el=ces.el,
+            el_nod=el_nod,
+            start_with_elnod=args.start_with_el_nod,
+            end_with_elnod=args.end_with_el_nod,
             scanrate=args.scan_rate,
+            scanrate_el=args.scan_rate_el,
             scan_accel=args.scan_accel,
-            sinc_modulation=args.scan_sinc_modulate,
+            scan_accel_el=args.scan_accel_el,
+            cosecant_modulation=args.scan_cosecant_modulate,
             CES_start=None,
             CES_stop=None,
             sun_angle_min=args.sun_angle_min,
@@ -386,9 +414,9 @@ def main():
 
     args, comm = parse_arguments(comm)
 
-    # Initialize madam parameters
-
-    madampars = pipeline_tools.setup_madam(args)
+    if args.use_madam:
+        # Initialize madam parameters
+        madampars = pipeline_tools.setup_madam(args)
 
     # Load and broadcast the schedule file
 
@@ -504,30 +532,7 @@ def main():
 
             # Bin and destripe maps
 
-            pipeline_tools.apply_madam(
-                args,
-                comm,
-                data,
-                madampars,
-                outpath,
-                detweights,
-                totalname_freq,
-                freq=freq,
-                time_comms=time_comms,
-                telescope_data=telescope_data,
-                first_call=(mc == firstmc),
-            )
-
-            if args.apply_polyfilter or args.apply_groundfilter:
-
-                # Filter signal
-
-                pipeline_tools.apply_polyfilter(args, comm, data, totalname_freq)
-
-                pipeline_tools.apply_groundfilter(args, comm, data, totalname_freq)
-
-                # Bin filtered maps
-
+            if args.use_madam:
                 pipeline_tools.apply_madam(
                     args,
                     comm,
@@ -539,10 +544,59 @@ def main():
                     freq=freq,
                     time_comms=time_comms,
                     telescope_data=telescope_data,
-                    first_call=False,
-                    extra_prefix="filtered",
-                    bin_only=True,
+                    first_call=(mc == firstmc),
                 )
+            else:
+                pipeline_tools.apply_mapmaker(
+                    args,
+                    comm,
+                    data,
+                    outpath,
+                    totalname_freq,
+                    time_comms=time_comms,
+                    telescope_data=telescope_data,
+                    first_call=(mc == firstmc),
+                )
+
+            if args.apply_polyfilter or args.apply_groundfilter:
+
+                # Filter signal
+
+                pipeline_tools.apply_polyfilter(args, comm, data, totalname_freq)
+
+                pipeline_tools.apply_groundfilter(args, comm, data, totalname_freq)
+
+                # Bin filtered maps
+
+                if args.use_madam:
+                    pipeline_tools.apply_madam(
+                        args,
+                        comm,
+                        data,
+                        madampars,
+                        outpath,
+                        detweights,
+                        totalname_freq,
+                        freq=freq,
+                        time_comms=time_comms,
+                        telescope_data=telescope_data,
+                        first_call=False,
+                        extra_prefix="filtered",
+                        bin_only=True,
+                    )
+                else:
+                    pipeline_tools.apply_mapmaker(
+                        args,
+                        comm,
+                        data,
+                        outpath,
+                        totalname_freq,
+                        time_comms=time_comms,
+                        telescope_data=telescope_data,
+                        first_call=False,
+                        extra_prefix="filtered",
+                        bin_only=True,
+                    )
 
     gt.stop_all()
     if mpiworld is not None:

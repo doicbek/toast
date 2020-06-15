@@ -289,8 +289,6 @@ class Patch(object):
             corner.compute(observer)
             patch_el_min = min(patch_el_min, corner.alt)
             patch_el_max = max(patch_el_max, corner.alt)
-            # lons.append(corner.az)  # DEBUG
-            # lats.append(corner.alt)  # DEBUG
             if corner.alt > el_min:
                 # At least one corner is visible
                 in_view = True
@@ -644,7 +642,6 @@ def attempt_scan(
     not_visible,
     t,
     fp_radius,
-    tstep,
     stop_timestamp,
     tstop_cooler,
     sun,
@@ -653,6 +650,7 @@ def attempt_scan(
     fout,
     fout_fmt,
     ods,
+    boresight_angle,
 ):
     """ Attempt scanning the visible patches in order until success.
     """
@@ -661,7 +659,16 @@ def attempt_scan(
         if isinstance(patch, CoolerCyclePatch):
             # Cycle the cooler
             t = add_cooler_cycle(
-                args, t, stop_timestamp, observer, sun, moon, fout, fout_fmt, patch
+                args,
+                t,
+                stop_timestamp,
+                observer,
+                sun,
+                moon,
+                fout,
+                fout_fmt,
+                patch,
+                boresight_angle,
             )
             success = True
             break
@@ -705,6 +712,7 @@ def attempt_scan(
                         patch,
                         el,
                         ods,
+                        boresight_angle,
                     )
                     patch.step_azel()
                     break
@@ -780,7 +788,6 @@ def attempt_scan_pole(
     fp_radius,
     el_max,
     el_min,
-    tstep,
     stop_timestamp,
     tstop_cooler,
     sun,
@@ -789,6 +796,7 @@ def attempt_scan_pole(
     fout,
     fout_fmt,
     ods,
+    boresight_angle,
 ):
     """ Attempt scanning the visible patches in order until success.
     """
@@ -800,7 +808,16 @@ def attempt_scan_pole(
         if isinstance(patch, CoolerCyclePatch):
             # Cycle the cooler
             t = add_cooler_cycle(
-                args, tstart, stop_timestamp, observer, sun, moon, fout, fout_fmt, patch
+                args,
+                tstart,
+                stop_timestamp,
+                observer,
+                sun,
+                moon,
+                fout,
+                fout_fmt,
+                patch,
+                boresight_angle,
             )
             success = True
             break
@@ -848,6 +865,7 @@ def attempt_scan_pole(
                         patch,
                         el,
                         ods,
+                        boresight_angle,
                         subscan=subscan,
                     )
                     el += np.radians(args.pole_el_step)
@@ -1258,6 +1276,7 @@ def add_scan(
     patch,
     el,
     ods,
+    boresight_angle,
     subscan=-1,
 ):
     """ Make an entry for a CES in the schedule file.
@@ -1374,10 +1393,11 @@ def add_scan(
             to_UTC(t2),
             to_MJD(t1),
             to_MJD(t2),
+            boresight_angle,
             patch.name,
-            azmin,
-            azmax,
-            el / degree,
+            (azmin + args.boresight_offset_az_deg) % 360,
+            (azmax + args.boresight_offset_az_deg) % 360,
+            (el / degree + args.boresight_offset_el_deg),
             rising_string,
             sun_el1,
             sun_az1,
@@ -1418,7 +1438,9 @@ def add_scan(
 
 
 @function_timer
-def add_cooler_cycle(args, tstart, tstop, observer, sun, moon, fout, fout_fmt, patch):
+def add_cooler_cycle(
+    args, tstart, tstop, observer, sun, moon, fout, fout_fmt, patch, boresight_angle
+):
     """ Make an entry for a cooler cycle in the schedule file.
     """
     log = Logger.get()
@@ -1447,6 +1469,7 @@ def add_cooler_cycle(args, tstart, tstop, observer, sun, moon, fout, fout_fmt, p
         to_UTC(t2),
         to_MJD(t1),
         to_MJD(t2),
+        boresight_angle,
         patch.name,
         az,
         az,
@@ -1488,11 +1511,6 @@ def get_visible(args, observer, sun, moon, patches, el_min):
     log = Logger.get()
     visible = []
     not_visible = []
-    # DEBUG begin
-    # import healpy as hp
-    # import matplotlib.pyplot as plt
-    # hp.mollview(np.zeros(12) + hp.UNSEEN, coord='C', cbar=False)
-    # DEBUG end
     for patch in patches:
         # Reject all patches that have even one corner too close
         # to the Sun or the Moon and patches that are completely
@@ -1509,14 +1527,6 @@ def get_visible(args, observer, sun, moon, patches, el_min):
         if not in_view:
             not_visible.append((patch.name, msg))
 
-        # DEBUG begin
-        # if patch.name in ['north', 'south']:
-        #    color, lw = 'red', 4
-        # else:
-        #    color, lw = 'black', 2
-        # hp.projplot(np.degrees(lons), np.degrees(lats), '-', threshold=1,
-        #            lonlat=True, coord='C', color=color, lw=lw)
-        # DEBUG end
         if in_view:
             if not args.delay_sso_check:
                 # Finally, check that the Sun or the Moon are not
@@ -1537,6 +1547,17 @@ def get_visible(args, observer, sun, moon, patches, el_min):
         else:
             log.debug("NOT VISIBLE: {}".format(not_visible[-1]))
     return visible, not_visible
+
+
+@function_timer
+def get_boresight_angle(args, t, t0=0):
+    """ Return the scheduled boresight angle at time t.
+    """
+    if args.boresight_angle_step == 0 or args.boresight_angle_time == 0:
+        return 0
+
+    istep = int((t - t0) / 60 / args.boresight_angle_time)
+    return (args.boresight_angle_step * istep) % 360
 
 
 @function_timer
@@ -1640,15 +1661,15 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
     )
 
     fout_fmt0 = (
-        "#{:20} {:20} {:14} {:14} "
-        "{:35} {:8} {:8} {:8} {:5} "
-        "{:8} {:8} {:8} {:8} "
-        "{:8} {:8} {:8} {:8} {:5} "
-        "{:5} {:3}\n"
+        "#{:>20} {:>20} {:>14} {:>14} {:>8} "
+        "{:35} {:>8} {:>8} {:>8} {:>5} "
+        "{:>8} {:>8} {:>8} {:>8} "
+        "{:>8} {:>8} {:>8} {:>8} {:>5} "
+        "{:>5} {:>3}\n"
     )
 
     fout_fmt = (
-        " {:20} {:20} {:14.6f} {:14.6f} "
+        " {:20} {:20} {:14.6f} {:14.6f} {:8.2f} "
         "{:35} {:8.2f} {:8.2f} {:8.2f} {:5} "
         "{:8.2f} {:8.2f} {:8.2f} {:8.2f} "
         "{:8.2f} {:8.2f} {:8.2f} {:8.2f} {:5.2f} "
@@ -1661,6 +1682,7 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
             "Stop time UTC",
             "Start MJD",
             "Stop MJD",
+            "Rotation",
             "Patch name",
             "Az min",
             "Az max",
@@ -1680,8 +1702,6 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
         )
     )
 
-    tstep = 600
-
     # Operational days
     ods = set()
 
@@ -1689,6 +1709,7 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
     last_successful = t
     while True:
         t, blocked = apply_blockouts(args, t)
+        boresight_angle = get_boresight_angle(args, t)
         if t > stop_timestamp:
             break
         if t - last_successful > 86400 or blocked:
@@ -1721,7 +1742,7 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
                     sun.alt / degree, sun_el_max / degree
                 )
             )
-            t += tstep
+            t += args.time_step
             continue
         moon.compute(observer)
 
@@ -1729,7 +1750,7 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
 
         if len(visible) == 0:
             log.debug("No patches visible at {}: {}".format(to_UTC(t), not_visible))
-            t += tstep
+            t += args.time_step
             continue
 
         # Determine if a cooler cycle sets a limit for observing
@@ -1758,7 +1779,6 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
                 fp_radius,
                 el_max,
                 el_min,
-                tstep,
                 stop_timestamp,
                 tstop_cooler,
                 sun,
@@ -1767,6 +1787,7 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
                 fout,
                 fout_fmt,
                 ods,
+                boresight_angle,
             )
         else:
             success, t = attempt_scan(
@@ -1776,7 +1797,6 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
                 not_visible,
                 t,
                 fp_radius,
-                tstep,
                 stop_timestamp,
                 tstop_cooler,
                 sun,
@@ -1785,6 +1805,7 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
                 fout,
                 fout_fmt,
                 ods,
+                boresight_angle,
             )
 
         if args.operational_days and len(ods) > args.operational_days:
@@ -1794,7 +1815,7 @@ def build_schedule(args, start_timestamp, stop_timestamp, patches, observer, sun
             log.debug(
                 "No patches could be scanned at {}: {}".format(to_UTC(t), not_visible)
             )
-            t += tstep
+            t += args.time_step
         else:
             last_successful = t
 
@@ -1978,6 +1999,20 @@ def parse_args():
         help="Maximum allowed sun elevation [deg]",
     )
     parser.add_argument(
+        "--boresight-angle-step",
+        required=False,
+        default=0,
+        type=np.float,
+        help="Boresight rotation step size [deg]",
+    )
+    parser.add_argument(
+        "--boresight-angle-time",
+        required=False,
+        default=0,
+        type=np.float,
+        help="Boresight rotation step interval [minutes]",
+    )
+    parser.add_argument(
         "--start",
         required=False,
         default="2000-01-01 00:00:00",
@@ -2019,6 +2054,13 @@ def parse_args():
         default=10,
         type=np.float,
         help="Gap between split CES:es [seconds]",
+    )
+    parser.add_argument(
+        "--time-step",
+        required=False,
+        default=600,
+        type=np.float,
+        help="Time step after failed target acquisition [seconds]",
     )
     parser.add_argument(
         "--one-scan-per-day",
@@ -2088,6 +2130,20 @@ def parse_args():
     )
     parser.add_argument(
         "--out", required=False, default="schedule.txt", help="Output filename"
+    )
+    parser.add_argument(
+        "--boresight-offset-el-deg",
+        required=False,
+        default=0,
+        type=np.float,
+        help="Optional offset added to every observing elevation",
+    )
+    parser.add_argument(
+        "--boresight-offset-az-deg",
+        required=False,
+        default=0,
+        type=np.float,
+        help="Optional offset added to every observing azimuth",
     )
 
     try:

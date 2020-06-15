@@ -15,7 +15,10 @@ foreach(policy
   endif()
 endforeach()
 
-project(toast VERSION 2.3.0 LANGUAGES C CXX)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/toast/RELEASE REL_VERSION)
+string(REGEX REPLACE "^([0-9]+\\.[0-9]+)\\..*" "\\1" MAJMIN_VERSION "${REL_VERSION}")
+
+project(toast VERSION ${MAJMIN_VERSION} LANGUAGES C CXX)
 
 # Force C++11
 set(CMAKE_CXX_STANDARD 11)
@@ -23,13 +26,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Auxiliary files
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
-
-# Copy the RELEASE file into the build directory
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/RELEASE"
-    "${CMAKE_CURRENT_BINARY_DIR}/RELEASE"
-    COPYONLY
-)
 
 # Use GNUInstallDirs to install libraries into correct locations on all
 # platforms.
@@ -44,17 +40,40 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # External packages
 
+# In some situations (like building python wheels), it is useful to statically link to
+# our external dependencies.  This allows us to ship self-contained compiled
+# extensions.  We check a variable here, and if set, we look for static versions of
+# our dependencies.
+#
+if(NOT TOAST_STATIC_DEPS AND NOT $ENV{TOAST_STATIC_DEPS} STREQUAL "")
+  set(TOAST_STATIC_DEPS $ENV{TOAST_STATIC_DEPS})
+endif()
+
 find_package(OpenMP)
 
+if(TOAST_STATIC_DEPS)
+    set(BLA_STATIC TRUE)
+    set(FFTW_USE_STATIC_LIBS TRUE)
+    set(AATM_USE_STATIC_LIBS TRUE)
+    set(SUITESPARSE_USE_STATIC_LIBS TRUE)
+endif()
+
 find_package(BLAS)
+
 if(BLAS_FOUND)
     find_package(LAPACK)
     if(LAPACK_FOUND)
         find_package(LAPACKnames)
-    else(LAPACK_FOUND)
-        message(SEND_ERROR "Could not find a working LAPACK installation")
-    endif(LAPACK_FOUND)
-endif(BLAS_FOUND)
+    else()
+        if($ENV{READTHEDOCS} STREQUAL "")
+            message(FATAL_ERROR "Could not find a working LAPACK installation")
+        endif()
+    endif()
+else()
+    if($ENV{READTHEDOCS} STREQUAL "")
+        message(FATAL_ERROR "Could not find a working BLAS installation")
+    endif()
+endif()
 
 find_package(FFTW)
 
@@ -62,11 +81,7 @@ find_package(AATM)
 
 find_package(SuiteSparse)
 
-find_package(MPI)
-
 find_package(PythonInterp REQUIRED)
-
-find_package(MPI4PY)
 
 # Internal products
 
