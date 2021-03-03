@@ -433,23 +433,9 @@ toast::FFTPlanReal1D * toast::FFTPlanReal1D::create(int64_t length, int64_t n,
                                                     fft_plan_type type,
                                                     fft_direction dir,
                                                     double scale) {
-    #ifdef HAVE_MKL
-
-    return new FFTPlanReal1DMKL(length, n, type, dir, scale);
-
-    #else // ifdef HAVE_MKL
-    # ifdef HAVE_FFTW
 
     return new FFTPlanReal1DFFTW(length, n, type, dir, scale);
 
-    # else // ifdef HAVE_FFTW
-    auto here = TOAST_HERE();
-    auto log = toast::Logger::get();
-    std::string msg = "FFTs require MKL or FFTW";
-    log.error(msg.c_str(), here);
-    throw std::runtime_error(msg.c_str());
-    # endif // ifdef HAVE_FFTW
-    #endif  // ifdef HAVE_MKL
 
     return NULL;
 }

@@ -303,56 +303,74 @@ void toast::pointing_matrix_healpix_hwp(toast::HealpixPixels const & hpix,
 		else {
 		
         toast::AlignedVector <double> detang(n);
-        toast::AlignedVector <double> hwpang2f(n);
+        toast::AlignedVector <double> bqiang(n);
+        toast::AlignedVector <double> biqang(n);
+        toast::AlignedVector <double> cqqang(n);
 
         // FIXME:  Switch back to fast version after unit tests improved.
         toast::vatan2(n, by, bx, detang.data());
+			
+// 		double MII=hwpparams[0]; 
+// 		double MIQ=hwpparams[1]; 
+// 		double MIU=hwpparams[2]; 
+// 		double MIV=hwpparams[3]; 
+// 		double MQI=hwpparams[4]; 
+// 		double MQQ=hwpparams[5]; 
+// 		double MQU=hwpparams[6]; 
+// 		double MQV=hwpparams[7]; 		
+// 		double MUI=hwpparams[8]; 
+// 		double MUQ=hwpparams[9]; 
+// 		double MUU=hwpparams[10];
+// 		double MUV=hwpparams[11];
+// 		double MVI=hwpparams[12];
+// 		double MVQ=hwpparams[13];
+// 		double MVU=hwpparams[14];
+// 		double MVV=hwpparams[15];
+			
+		double phiqi = atan2(hwpparams[8],hwpparams[4]);
+		double phiiq = atan2(hwpparams[2],hwpparams[1]);
+		double phiqq = atan2(hwpparams[6]+hwpparams[9],hwpparams[5]-hwpparams[10]);
 
+		double AII = hwpparams[0];
+		double BQI = sqrt(hwpparams[4]*hwpparams[4]+hwpparams[8]*hwpparams[8]);
+		double AQQ = 0.5*(hwpparams[5]+hwpparams[10]);
+		double AQU = 0.5*(hwpparams[6]-hwpparams[9]);
+		double BIQ = sqrt(hwpparams[1]*hwpparams[1]+hwpparams[2]*hwpparams[2]);
+		double CQQ = 0.5*sqrt(pow(hwpparams[5]-hwpparams[10],2)+pow(hwpparams[6]+hwpparams[9],2));
+			
         for (size_t i = 0; i < n; ++i) {
             detang[i] *= 2.0;
+            bqiang[i] = 2.0*hwpang[i]+detang[i]+phiqi;
+            biqang[i] = 2.0*hwpang[i]+phiiq;
+            cqqang[i] = 4.0*hwpang[i]+detang[i]+phiqq;
         }
-        for (size_t i = 0; i < n; ++i) {
-            hwpang2f[i] = 2.0*hwpang[i];
-        }
-		
 		
         toast::AlignedVector <double> buf3(n);
         toast::AlignedVector <double> buf4(n);	
 
         double * detsinout = buf1.data();
         double * detcosout = buf2.data();
-        double * f2sinout = buf3.data();
-        double * f2cosout = buf4.data();
-
+        double * bqicosout = buf4.data();
+        double * biqsinout = buf1.data();
+        double * biqcosout = buf2.data();
+        double * cqqsinout = buf1.data();
+        double * cqqcosout = buf2.data();
+		
         // FIXME:  Switch back to fast version after unit tests pass
         toast::vsincos(n, detang.data(), detsinout, detcosout);
-        toast::vsincos(n, hwpang2f.data(), f2sinout, f2cosout);
-
-		
-		double MII=hwpparams[0]; 
-		double MIQ=hwpparams[1]; 
-		double MIU=hwpparams[2]; 
-		double MIV=hwpparams[3]; 
-		double MQI=hwpparams[4]; 
-		double MQQ=hwpparams[5]; 
-		double MQU=hwpparams[6]; 
-		double MQV=hwpparams[7]; 		
-		double MUI=hwpparams[8]; 
-		double MUQ=hwpparams[9]; 
-		double MUU=hwpparams[10];
-		double MUV=hwpparams[11];
-		double MVI=hwpparams[12];
-		double MVQ=hwpparams[13];
-		double MVU=hwpparams[14];
-		double MVV=hwpparams[15];
-			
+        toast::vsincos(n, bqiang.data(), biqsinout, bqicosout);
+        toast::vsincos(n, biqang.data(), biqsinout, biqcosout);
+        toast::vsincos(n, cqqang.data(), cqqsinout, cqqcosout);
 			
         for (size_t i = 0; i < n; ++i) {
             size_t off = 3 * i;
-            weights[off + 0] = cal * .5*(MII + MUI*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQI*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])); 
-            weights[off + 1] = eta * cal * .5*(f2cosout[i]*(MIQ + MUQ*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQQ*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])) - f2sinout[i]*(MIU + MUU*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQU*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])));
-            weights[off + 2] = eta * cal * .5*(f2sinout[i]*(MIQ + MUQ*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQQ*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])) + f2cosout[i]*(MIU + MUU*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQU*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])));
-            // weights[off + 3] = eta * cal * .5*(MIV + MUV*(-f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQV*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])));
+			weights[off + 0] = AII + BQI*bqicosout[i];
+			weights[off + 1] = AQQ*detcosout[i] - AQU*detsinout[i] + BIQ*biqcosout[i] + CQQ*cqqcosout[i];
+			weights[off + 2] = AQU*detcosout[i] + AQQ*detsinout[i] + BIQ*biqsinout[i] + CQQ*cqqsinout[i];
+			//weights[off + 0] = cal * (MII + MUI*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQI*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])); 
+			//weights[off + 1] = eta * cal * (f2cosout[i]*(MIQ + MUQ*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQQ*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])) - f2sinout[i]*(MIU + MUU*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQU*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])));
+			//weights[off + 2] = eta * cal * (f2sinout[i]*(MIQ + MUQ*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQQ*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])) + f2cosout[i]*(MIU + MUU*(-1.*f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQU*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])));
+            //weights[off + 3] = eta * cal * .5*(MIV + MUV*(-f2sinout[i]*detcosout[i] + f2cosout[i]*detsinout[i]) + MQV*(f2cosout[i]*detcosout[i] + f2sinout[i]*detsinout[i])));
         }
 		}
     } else {

@@ -19,7 +19,7 @@ def find_compilers():
     # If we have mpi4py, then get the MPI compilers that were used to build that.
     # Then get the serial compilers used by the MPI wrappers.  Otherwise, just the
     # normal distutils compilers.
-    try:
+    if True:
         from mpi4py import MPI
         import mpi4py
 
@@ -46,8 +46,6 @@ def find_compilers():
         cc = mpicc_com.split()[0]
         cxx = mpicxx_com.split()[0]
 
-    except ImportError:
-        pass
 
     return (cc, cxx)
 
@@ -137,6 +135,7 @@ class CMakeBuild(build_ext):
         build_args = ["--config", cfg]
 
         cmake_args += ["-DCMAKE_BUILD_TYPE=" + cfg]
+        cmake_args += ["-DFFTW_ROOT=" + os.environ['FFTW_ROOT']]
 
         # Set compilers
 
