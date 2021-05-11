@@ -39,5 +39,6 @@ install(FILES
     template_offset.py
     template_fourier2d.py
     template_subharmonic.py
+    template_gain.py
     DESTINATION ${PYTHON_SITE}/toast/tests
 )
