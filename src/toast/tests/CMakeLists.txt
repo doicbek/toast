@@ -40,5 +40,6 @@ install(FILES
     template_fourier2d.py
     template_subharmonic.py
     template_gain.py
+    ops_sim_gaindrifts.py
     DESTINATION ${PYTHON_SITE}/toast/tests
 )
