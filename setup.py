@@ -1,4 +1,4 @@
-# This setup.py file simply builds TOAST using the underlying cmake build
+# Thit setup.py file simply builds TOAST using the underlying cmake build
 # system.  This is only preferred in certain cases where the automation is
 # easier from a setup.py (e.g. readthedocs, pip, etc).
 
@@ -29,16 +29,12 @@ def find_compilers():
         mpicc_com = None
         mpicxx_com = None
         try:
-            mpicc_com = subprocess.check_output(
-                "{} -show".format(mpicc), shell=True, universal_newlines=True
-            )
+            mpicc_com = subprocess.check_output("{} --version".format(mpicc), shell=True, universal_newlines=True)
         except CalledProcessError:
             # Cannot run the MPI C compiler, give up
             raise ImportError
         try:
-            mpicxx_com = subprocess.check_output(
-                "{} -show".format(mpicxx), shell=True, universal_newlines=True
-            )
+            mpicxx_com = subprocess.check_output("{} --version".format(mpicxx), shell=True, universal_newlines=True)
         except CalledProcessError:
             # Cannot run the MPI C++ compiler, give up
             raise ImportError
