@@ -20,6 +20,7 @@ install(FILES
     pixels.py
     weather.py
     ops_sim_satellite.py
+    ops_sim_ground.py
     ops_sim_tod_noise.py
     ops_sim_tod_dipole.py
     ops_sim_tod_conviqt.py
@@ -39,5 +40,6 @@ install(FILES
     template_offset.py
     template_fourier2d.py
     template_subharmonic.py
+    ops_sim_gaindrifts.py
     DESTINATION ${PYTHON_SITE}/toast/tests
 )

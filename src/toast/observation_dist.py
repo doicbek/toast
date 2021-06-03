@@ -203,7 +203,7 @@ def compute_1d_offsets(off, n, new_dist):
 
 
 def compute_det_sample_offsets(all_dets, old_dist, new_dist):
-    """"""
+    """ """
     det_order = {y: x for x, y in enumerate(all_dets)}
 
     old_dets = list()

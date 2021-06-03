@@ -40,7 +40,7 @@ class PointingDetectorSimple(Operator):
     quats = Unicode(
         None,
         allow_none=True,
-        help="Observation detdata key for output quaternions (for debugging)",
+        help="Observation detdata key for output quaternions",
     )
 
     coord_in = Unicode(
@@ -169,7 +169,7 @@ class PointingDetectorSimple(Operator):
                     # In such cases, the detector quaternion can depend on
                     # time and the observing direction and a custom detector
                     # pointing operator needs to be implemented.
-                    detquat = focalplane[det]["quat"]
+                    detquat = np.array(focalplane[det]["quat"], dtype=np.float64)
 
                     # Timestream of detector quaternions
                     quats = qa.mult(boresight, detquat)

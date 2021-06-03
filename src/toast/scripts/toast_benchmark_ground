@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+
+# Copyright (c) 2015-2021 by the parties listed in the AUTHORS file.
+# All rights reserved.  Use of this source code is governed by
+# a BSD-style license that can be found in the LICENSE file.
+
+"""
+This script runs a simple ground simulation and makes a map.
+The workflow is tailored to the size of the communicator.
+"""
+
+import os
+import sys
+import traceback
+import argparse
+from astropy import units as u
+import toast
+from toast.schedule_sim_ground import run_scheduler
+from toast.timing import gather_timers, dump
+from benchmarking_utilities import get_mpi_settings, select_case, make_focalplane, scan_map, run_mapmaker, compute_science_metric
+
+def parse_arguments():
+    """
+    Defines and parses the arguments for the script.
+    """        
+    # defines the parameters of the script
+    parser = argparse.ArgumentParser(description="Run a TOAST ground workflow scaled appropriately to the MPI communicator size and available memory.")
+    parser.add_argument(
+        "--out_dir",
+        required=False,
+        default="toast_benchmark_ground_out",
+        type=str,
+        help="The output directory",
+    )
+    parser.add_argument(
+        "--node_mem_gb",
+        required=False,
+        default=None,
+        type=float,
+        help="Use this much memory per node in GB",
+    )
+    parser.add_argument(
+        "--dry_run",
+        required=False,
+        default=None,
+        type=str,
+        help="Comma-separated total_procs,node_procs to simulate.",
+    )
+    parser.add_argument(
+        "--case",
+        required=False,
+        default='auto',
+        choices=['auto', 'tiny', 'xsmall', 'small', 'medium', 'large', 'xlarge', 'heroic'],
+        type=str,
+        help="Size of the worflow to be run: 'tiny' (1GB), 'xsmall' (10GB), 'small' (100GB), 'medium' (1TB), 'large' (10TB), 'xlarge' (100TB), 'heroic' (1000TB) or 'auto' (deduced from MPI parameters).",
+    )
+
+    # The operators we want to configure from the command line or a parameter file.
+    # We will use other operators, but these are the ones that the user can configure.
+    # The "name" of each operator instance controls what the commandline and config
+    # file options will be called.
+    operators = [
+        toast.ops.SimGround(name="sim_ground"),
+        toast.ops.DefaultNoiseModel(name="default_model", noise_model="default_model"),
+        toast.ops.ElevationNoise(name="elevation_model", noise_model="default_model", out_model="el_weighted_model"),
+        toast.ops.ScanHealpix(name="scan_map"),
+        toast.ops.SimNoise(name="sim_noise", noise_model="el_weighted_model"),
+        toast.ops.PointingDetectorSimple(name="det_pointing"),
+        toast.ops.PointingHealpix(name="pointing", mode="IQU", nside=1024),
+        toast.ops.BinMap(name="binner", pixel_dist="pix_dist"),
+        toast.ops.MapMaker(name="mapmaker", solve_rcond_threshold=1e-3),
+        toast.ops.PointingHealpix(name="pointing_final", enabled=False, mode="IQU"),
+        toast.ops.BinMap(name="binner_final", enabled=False, pixel_dist="pix_dist_final"),
+    ]
+
+    # Templates we want to configure from the command line or a parameter file.
+    templates = [toast.templates.Offset(name="baselines")]
+
+    # generates config
+    config, args, jobargs = toast.parse_config(parser, operators=operators, templates=templates)
+
+    # hardcoded arguments
+    # focal plane
+    args.sample_rate = 100 # sample_rate is nb sample per second, we do (60 * obs_minutes * sample_rate) sample for one observation of one detector in a minute
+    args.max_detector = 2054 # Hex-packed 1027 pixels (18 rings) times two dets per pixel.
+    args.width = 10
+    args.obs_minutes = 60
+    args.psd_net = 50.0e-6
+    args.psd_fmin = 1.0e-5
+    # schedule, site and telescope parameters
+    args.telescope_name = "telescope"
+    args.site_name = "Atacama"
+    args.site_lon = " -67:47:10"
+    args.site_lat = " -22:57:30"
+    args.site_alt = 5200.0 * u.meter
+    args.schedule_patch = "tile000,1,40,0,60,-40"
+    args.schedule_start = "2020-01-01 00:00:00"
+    args.schedule_stop = "2020-01-01 12:00:00"
+    # scan map
+    args.input_map = 'fake_input_sky.fits'
+
+    return config, args, jobargs
+
+def make_schedule(args, world_comm, site):
+    """
+    Creates a ground schedule
+    """
+    schedule = None
+    if (world_comm is None) or (world_comm.rank == 0):
+        schedule_file = os.path.join(args.out_dir, "ground_bench_schedule.txt")
+        run_scheduler(
+                opts=["--site-name", args.site_name,
+                      "--telescope", args.telescope_name,
+                      "--site-lon", "{}".format(site.earthloc.lon.to_value(u.degree)),
+                      "--site-lat",  "{}".format(site.earthloc.lat.to_value(u.degree)),
+                      "--site-alt", "{}".format(site.earthloc.height.to_value(u.meter)),
+                      "--patch", args.schedule_patch,
+                      "--start", args.schedule_start,
+                      "--stop", args.schedule_stop,
+                      "--out", schedule_file])
+        schedule = toast.schedule.GroundSchedule()
+        schedule.read(schedule_file)
+    if world_comm is not None:
+        schedule = world_comm.bcast(schedule, root=0)
+    return schedule
+
+def main():
+    env = toast.utils.Environment.get()
+    log = toast.utils.Logger.get()
+    env.enable_function_timers()
+    global_timer = toast.timing.GlobalTimers.get()
+    global_timer.start("toast_benchmark_ground (total)")
+
+    # defines and gets the arguments for the script
+    config, args, jobargs = parse_arguments()
+
+    # Instantiate our objects that were configured from the command line / files
+    job = toast.create_from_config(config)
+    ops = job.operators
+
+    # gets the MPI parameters
+    world_comm, n_procs, rank, n_nodes, avail_node_bytes = get_mpi_settings(args, log, env)
+
+    # Log the config
+    if rank == 0:
+        if not os.path.isdir(args.out_dir):
+            os.makedirs(args.out_dir)
+        outlog = os.path.join(args.out_dir, "config_log.toml")
+        toast.config.dump_toml(outlog, config)
+
+    # selects appropriate case size
+    select_case(args, n_procs, n_nodes, avail_node_bytes, ops.binner.full_pointing, world_comm, log)
+
+    # Creates the focalplane file.
+    focalplane = make_focalplane(args, world_comm, log)
+
+    # from here on, we start the actual work (unless this is a dry run)
+    global_timer.start("toast_benchmark_ground (science work)")
+    if args.dry_run is not None:
+        log.info_rank0("Exit from dry run.", world_comm)
+        # We are done!
+        sys.exit(0)
+
+    # Create a telescope for the simulation.
+    site = toast.instrument.GroundSite(args.site_name, args.site_lat, args.site_lon, args.site_alt)
+    telescope = toast.instrument.Telescope(args.telescope_name, focalplane=focalplane, site=site)
+
+    # Load the schedule file
+    schedule = make_schedule(args, world_comm, site)
+
+    # Find the group size for this job, either from command-line overrides or
+    # by estimating the data volume.
+    group_size = toast.job_group_size(
+        world_comm,
+        jobargs,
+        schedule=schedule,
+        focalplane=focalplane,
+        full_pointing=ops.binner.full_pointing,
+    )
+
+    # Create the toast communicator
+    comm = toast.Comm(world=world_comm, groupsize=group_size)
+
+    # Create the (initially empty) data
+    data = toast.Data(comm=comm)
+
+    # Simulate the telescope pointing
+    ops.sim_ground.telescope = telescope
+    ops.sim_ground.schedule = schedule
+    ops.sim_ground.apply(data)
+
+    # Construct a "perfect" noise model just from the focalplane parameters
+    ops.default_model.apply(data)
+
+    # Create the Elevation modulated noise model
+    ops.elevation_model.detector_pointing = ops.det_pointing
+    ops.elevation_model.view = ops.det_pointing.view
+    ops.elevation_model.apply(data)
+
+    # Set the pointing matrix operators to use the detector pointing
+    ops.pointing.detector_pointing = ops.det_pointing
+    ops.pointing_final.detector_pointing = ops.det_pointing
+
+    # Simulate sky signal from a map.
+    scan_map(args, rank, ops, data, log)
+
+    # Simulate detector noise
+    if ops.sim_noise.enabled:
+        ops.sim_noise.apply(data)
+
+    # Build up our map-making operation.
+    if ops.mapmaker.enabled:
+        run_mapmaker(ops, args, job.templates, data)
+
+    # end of the computations, sync and computes efficiency
+    global_timer.stop_all()
+    log.info_rank0("Gathering benchmarking metrics.", world_comm)
+    if world_comm is not None:
+        world_comm.barrier()
+    runtime = global_timer.seconds("toast_benchmark_ground (science work)")
+    compute_science_metric(args, runtime, n_nodes, rank, log)
+
+    # dumps all the timing information
+    timer = toast.timing.Timer()
+    timer.start()
+    alltimers = gather_timers(comm=world_comm)
+    if comm.world_rank == 0:
+        out = os.path.join(args.out_dir, "timing")
+        dump(alltimers, out)
+        timer.stop()
+        timer.report("toast_benchmark_ground (gathering and dumping timing info)")
+    else:
+        timer.stop()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        # We have an unhandled exception on at least one process.  Print a stack
+        # trace for this process and then abort so that all processes terminate.
+        mpiworld, procs, rank = toast.get_world()
+        if procs == 1:
+            raise
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+        lines = traceback.format_exception(exc_type, exc_value, exc_traceback)
+        lines = [f"Proc {rank}: {x}" for x in lines]
+        print("".join(lines), flush=True)
+        if mpiworld is not None:
+            mpiworld.Abort()

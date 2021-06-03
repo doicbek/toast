@@ -76,6 +76,8 @@ def main():
     #
     # We can also set some default values here for the traits.
 
+    madam_available = toast.ops.madam.available()
+
     operators = [
         toast.ops.SimSatellite(name="sim_satellite"),
         toast.ops.DefaultNoiseModel(name="default_model"),
@@ -89,8 +91,9 @@ def main():
         toast.ops.BinMap(
             name="binner_final", enabled=False, pixel_dist="pix_dist_final"
         ),
-        toast.ops.Madam(name="madam", enabled=False),
     ]
+    if madam_available:
+        operators.append(toast.ops.Madam(name="madam", enabled=False))
 
     # Templates we want to configure from the command line or a parameter file.
 
@@ -129,14 +132,6 @@ def main():
     if world_comm is not None:
         focalplane = world_comm.bcast(focalplane, root=0)
 
-    # Create a telescope for the simulation.  Again, for a specific experiment we
-    # would use custom classes for the site.
-
-    site = toast.instrument.SpaceSite("space")
-    telescope = toast.instrument.Telescope(
-        "satellite", focalplane=focalplane, site=site
-    )
-
     # Load the schedule file
 
     if args.schedule is None:
@@ -150,6 +145,14 @@ def main():
     if world_comm is not None:
         schedule = world_comm.bcast(schedule, root=0)
 
+    # Create a telescope for the simulation.  Again, for a specific experiment we
+    # would use custom classes for the site.
+
+    site = toast.instrument.SpaceSite(schedule.site_name)
+    telescope = toast.instrument.Telescope(
+        schedule.telescope_name, focalplane=focalplane, site=site
+    )
+
     # Instantiate our objects that were configured from the command line / files
 
     job = toast.create_from_config(config)
@@ -161,7 +164,7 @@ def main():
     # requires full pointing) is enabled.
 
     full_pointing = False
-    if ops.madam.enabled:
+    if madam_available and ops.madam.enabled:
         full_pointing = True
     if ops.binner.full_pointing:
         full_pointing = True
@@ -222,7 +225,7 @@ def main():
             pix_dist.pointing = ops.pointing
             pix_dist.shared_flags = ops.binner.shared_flags
             pix_dist.shared_flag_mask = ops.binner.shared_flag_mask
-            pix_dist.save_pointing = ops.binner.full_pointing
+            pix_dist.save_pointing = full_pointing
         pix_dist.apply(data)
 
         ops.scan_map.pixel_dist = pix_dist.pixel_dist
@@ -273,8 +276,13 @@ def main():
             toast.pixels_io.write_healpix_fits(data[dkey], file, nest=ops.pointing.nest)
 
     # Run Madam
-    if ops.madam.enabled:
+    if madam_available and ops.madam.enabled:
         ops.madam.apply(data)
+
+    alltimers = toast.timing.gather_timers(comm=comm.comm_world)
+    if comm.world_rank == 0:
+        out = os.path.join(args.out_dir, "timing")
+        toast.timing.dump(alltimers, out)
 
 
 if __name__ == "__main__":

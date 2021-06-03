@@ -39,8 +39,8 @@ blkrun="-l 88"
 blktest="--check"
 
 # Directories to process
-cppdirs="libtoast libtoast_mpi toast"
-pydirs="toast ../pipelines"
+cppdirs="libtoast toast"
+pydirs="toast ../workflows"
 
 # Test
 for cppd in ${cppdirs}; do

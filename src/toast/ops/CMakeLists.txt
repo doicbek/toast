@@ -15,6 +15,9 @@ install(FILES
     sim_tod_dipole.py
     sim_satellite.py
     sim_ground.py
+    sim_ground_utils.py
+    elevation_noise.py
+    flag_intervals.py
     noise_model.py
     noise_weight.py
     gainscrambler.py
@@ -31,6 +34,7 @@ install(FILES
     madam.py
     madam_utils.py
     conviqt.py
+    sim_gaindrifts.py
     totalconvolve.py
     DESTINATION ${PYTHON_SITE}/toast/ops
 )

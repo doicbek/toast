@@ -20,7 +20,9 @@ from .pipeline import Pipeline
 
 from .sim_satellite import SimSatellite
 
-# from .sim_ground import SimGround
+from .sim_ground import SimGround
+
+from .elevation_noise import ElevationNoise
 
 from .sim_tod_noise import SimNoise
 
@@ -41,6 +43,8 @@ from .scan_healpix import ScanHealpix
 
 from .pointing import BuildPixelDistribution
 
+from .flag_intervals import FlagIntervals
+
 from .mapmaker_utils import (
     BuildHitMap,
     BuildInverseCovariance,
@@ -57,4 +61,7 @@ from .mapmaker import MapMaker
 from .madam import Madam
 
 from .conviqt import SimConviqt, SimWeightedConviqt
+
+from .sim_gaindrifts import GainDrifter
+
 from .totalconvolve import SimTotalconvolve

@@ -96,8 +96,6 @@ class PixelDistribution(object):
             comp = MPI.Comm.Compare(self._comm, other._comm)
             if comp not in (MPI.IDENT, MPI.CONGRUENT):
                 local_eq = False
-        if self._comm is not None:
-            local_eq = self._comm.allreduce(local_eq, op=MPI.LAND)
         return local_eq
 
     def __ne__(self, other):
@@ -649,9 +647,9 @@ class PixelData(object):
                         loc = dist.global_submap_to_local[glob]
                         sendview[c, :, :] = self.data[loc, :, :]
 
-                gt.start("REAL Allreduce")
+                gt.start("PixelData.sync_allreduce MPI Allreduce")
                 dist.comm.Allreduce(self._all_send, self._all_recv, op=MPI.SUM)
-                gt.stop("REAL Allreduce")
+                gt.stop("PixelData.sync_allreduce MPI Allreduce")
 
                 for c in range(ncomm):
                     glob = submap_off + c
@@ -757,6 +755,7 @@ class PixelData(object):
             None.
 
         """
+        gt = GlobalTimers.get()
         self.setup_alltoallv()
 
         if self._dist.comm is None:
@@ -764,10 +763,12 @@ class PixelData(object):
             return
 
         # Gather owned submaps locally
+        gt.start("PixelData.forward_alltoallv MPI Alltoallv")
         self._dist.comm.Alltoallv(
             [self.raw, self._send_counts, self._send_displ, self.mpitype],
             [self.receive, self._recv_counts, self._recv_displ, self.mpitype],
         )
+        gt.stop("PixelData.forward_alltoallv MPI Alltoallv")
         return
 
     @function_timer
@@ -778,6 +779,7 @@ class PixelData(object):
             None.
 
         """
+        gt = GlobalTimers.get()
         if self._dist.comm is None:
             # No communication needed
             return
@@ -787,10 +789,12 @@ class PixelData(object):
             )
 
         # Scatter result back
+        gt.start("PixelData.reverse_alltoallv MPI Alltoallv")
         self._dist.comm.Alltoallv(
             [self.receive, self._recv_counts, self._recv_displ, self.mpitype],
             [self.raw, self._send_counts, self._send_displ, self.mpitype],
         )
+        gt.stop("PixelData.reverse_alltoallv MPI Alltoallv")
         return
 
     @function_timer
