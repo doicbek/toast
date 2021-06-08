@@ -3,7 +3,7 @@
 # This minimum version is mostly set in order to get a newer version
 # of the FindMPI check.  Note that you can easily install a newer cmake version
 # using conda or pip.
-cmake_minimum_required(VERSION 3.12 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.17 FATAL_ERROR)
 
 foreach(policy
     CMP0048
@@ -63,24 +63,42 @@ if(TOAST_STATIC_DEPS)
     set(SUITESPARSE_USE_STATIC_LIBS TRUE)
 endif()
 
-# First look for MKL, since that will provide both FFT support and BLAS/LAPACK
-find_package(MKL)
+# look for CUDA and NVBLAS
+find_package(CUDAToolkit)
+if(CUDAToolkit_FOUND)
+    # TODO remove hardcoded path
+    set(BLAS_LIBRARIES "/usr/common/software/sles15_cgpu/cuda/11.1.1/lib64/libnvblas.so")
+    set(BLAS_FOUND TRUE)
+else()
+    message(FATAL_ERROR "Could not find CUDAToolkit")
+endif()
 
+# TODO
+message(WARNING "blas lib before: ${BLAS_LIBRARIES}")
+
+# First look for MKL, since that will provide both FFT support and BLAS/LAPACK
+find_package(MKL) #TODO
 if(MKL_FOUND)
     # Use MKL for BLAS / LAPACK
-    set(BLAS_LIBRARIES "${MKL_LIBRARIES}")
+    if(NOT BLAS_FOUND)
+        set(BLAS_FOUND TRUE)
+        set(BLAS_LIBRARIES "${MKL_LIBRARIES}")
+    endif()
     set(LAPACK_LIBRARIES "${MKL_LIBRARIES}")
-    set(BLAS_FOUND TRUE)
     set(LAPACK_FOUND TRUE)
 else()
+    message(WARNING "NO MKL")
     # Search for FFTW instead
     find_package(FFTW)
     if(NOT FFTW_FOUND)
         message(FATAL_ERROR "Could not find a supported FFT library (MKL or FFTW)")
     endif()
-    find_package(BLAS)
+    #find_package(BLAS) TODO
     find_package(LAPACK)
 endif()
+
+# TODO
+message(WARNING "blas lib after: ${BLAS_LIBRARIES}")
 
 if(BLAS_FOUND)
     if(LAPACK_FOUND)
