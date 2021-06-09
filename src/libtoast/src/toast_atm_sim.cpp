@@ -623,7 +623,7 @@ cholmod_sparse * toast::atm_sim_build_sparse_covariance(
     int stype = 1;
     size_t nnz = vals.size();
 
-    cholmod_triplet * cov_triplet = cholmod_allocate_triplet(nelem,
+    cholmod_triplet * cov_triplet = cholmod_l_allocate_triplet(nelem,
                                                              nelem,
                                                              nnz,
                                                              stype,
@@ -637,14 +637,14 @@ cholmod_sparse * toast::atm_sim_build_sparse_covariance(
     std::vector <double>().swap(vals);
     cov_triplet->nnz = nnz;
 
-    cholmod_sparse * cov_sparse = cholmod_triplet_to_sparse(cov_triplet,
+    cholmod_sparse * cov_sparse = cholmod_l_triplet_to_sparse(cov_triplet,
                                                             nnz,
                                                             chol.chcommon);
     if (chol.chcommon->status != CHOLMOD_OK) {
-        throw std::runtime_error("cholmod_triplet_to_sparse failed.");
+        throw std::runtime_error("cholmod_l_triplet_to_sparse failed.");
     }
 
-    cholmod_free_triplet(&cov_triplet, chol.chcommon);
+    cholmod_l_free_triplet(&cov_triplet, chol.chcommon);
 
     timer.stop();
 
@@ -702,10 +702,10 @@ cholmod_sparse * toast::atm_sim_sqrt_sparse_covariance(
     const int ntry = 2;
 
     for (int itry = 0; itry < ntry; ++itry) {
-        factorization = cholmod_analyze(cov, chol.chcommon);
+        factorization = cholmod_l_analyze(cov, chol.chcommon);
 
         if (chol.chcommon->status != CHOLMOD_OK) {
-            throw std::runtime_error("cholmod_analyze failed.");
+            throw std::runtime_error("cholmod_l_analyze failed.");
         }
 
         if (atm_verbose()) {
@@ -714,10 +714,10 @@ cholmod_sparse * toast::atm_sim_sqrt_sparse_covariance(
             logger.verbose(o.str().c_str());
         }
 
-        cholmod_factorize(cov, factorization, chol.chcommon);
+        cholmod_l_factorize(cov, factorization, chol.chcommon);
 
         if (chol.chcommon->status != CHOLMOD_OK) {
-            cholmod_free_factor(&factorization, chol.chcommon);
+            cholmod_l_free_factor(&factorization, chol.chcommon);
             if (itry < ntry - 1) {
                 // Extract band diagonal of the matrix and try
                 // factorizing again
@@ -727,12 +727,12 @@ cholmod_sparse * toast::atm_sim_sqrt_sparse_covariance(
                 int iupper = ndiag - 1;
                 int ilower = -iupper;
                 if (atm_verbose()) {
-                    cholmod_print_sparse(cov, "Covariance matrix", chol.chcommon);
+                    cholmod_l_print_sparse(cov, "Covariance matrix", chol.chcommon);
 
                     // DEBUG begin
                     if (itry == ntry - 2) {
                         FILE * covfile = fopen("failed_covmat.mtx", "w");
-                        cholmod_write_sparse(covfile, cov, NULL, NULL,
+                        cholmod_l_write_sparse(covfile, cov, NULL, NULL,
                                              chol.chcommon);
                         fclose(covfile);
                     }
@@ -745,12 +745,12 @@ cholmod_sparse * toast::atm_sim_sqrt_sparse_covariance(
                     logger.warning(o.str().c_str());
                 }
                 int mode = 1; // Numerical (not pattern) matrix
-                cholmod_band_inplace(ilower, iupper, mode, cov, chol.chcommon);
+                cholmod_l_band_inplace(ilower, iupper, mode, cov, chol.chcommon);
 
                 if (chol.chcommon->status != CHOLMOD_OK) {
-                    throw std::runtime_error("cholmod_band_inplace failed.");
+                    throw std::runtime_error("cholmod_l_band_inplace failed.");
                 }
-            } else throw std::runtime_error("cholmod_factorize failed.");
+            } else throw std::runtime_error("cholmod_l_factorize failed.");
         } else {
             break;
         }
@@ -782,13 +782,13 @@ cholmod_sparse * toast::atm_sim_sqrt_sparse_covariance(
         logger.verbose(o.str().c_str());
     }
 
-    cholmod_sparse * sqrt_cov = cholmod_factor_to_sparse(factorization, chol.chcommon);
+    cholmod_sparse * sqrt_cov = cholmod_l_factor_to_sparse(factorization, chol.chcommon);
 
     if (chol.chcommon->status != CHOLMOD_OK) {
-        throw std::runtime_error("cholmod_factor_to_sparse failed.");
+        throw std::runtime_error("cholmod_l_factor_to_sparse failed.");
     }
 
-    cholmod_free_factor(&factorization, chol.chcommon);
+    cholmod_l_free_factor(&factorization, chol.chcommon);
 
     // Report memory usage
 
@@ -836,14 +836,14 @@ void toast::atm_sim_apply_sparse_covariance(
 
     // Draw the Gaussian variates in a single call
 
-    cholmod_dense * noise_in = cholmod_allocate_dense(nelem, 1, nelem,
-                                                      CHOLMOD_REAL, chol.chcommon);
+    cholmod_dense * noise_in = cholmod_l_allocate_dense(nelem, 1, nelem,
+                                                        CHOLMOD_REAL, chol.chcommon);
 
     toast::rng_dist_normal(nelem, key1, key2, counter1, counter2,
                            (double *)noise_in->x);
 
-    cholmod_dense * noise_out = cholmod_allocate_dense(nelem, 1, nelem,
-                                                       CHOLMOD_REAL, chol.chcommon);
+    cholmod_dense * noise_out = cholmod_l_allocate_dense(nelem, 1, nelem,
+                                                         CHOLMOD_REAL, chol.chcommon);
 
     // Apply the sqrt covariance to impose correlations
 
@@ -851,14 +851,14 @@ void toast::atm_sim_apply_sparse_covariance(
     double one[2] = {1, 0};  // Complex one
     double zero[2] = {0, 0}; // Complex zero
 
-    cholmod_sdmult(sqrt_cov, notranspose, one, zero, noise_in, noise_out,
+    cholmod_l_sdmult(sqrt_cov, notranspose, one, zero, noise_in, noise_out,
                    chol.chcommon);
 
     if (chol.chcommon->status != CHOLMOD_OK) {
-        throw std::runtime_error("cholmod_sdmult failed.");
+        throw std::runtime_error("cholmod_l_sdmult failed.");
     }
 
-    cholmod_free_dense(&noise_in, chol.chcommon);
+    cholmod_l_free_dense(&noise_in, chol.chcommon);
 
     // Subtract the mean of the slice to reduce step between the slices
 
@@ -892,7 +892,7 @@ void toast::atm_sim_apply_sparse_covariance(
         realization[i] = p[i - ind_start];
     }
 
-    cholmod_free_dense(&noise_out, chol.chcommon);
+    cholmod_l_free_dense(&noise_out, chol.chcommon);
 
     return;
 }
@@ -976,7 +976,7 @@ void toast::atm_sim_compute_slice(
 
     gt.stop("atm_sim_sqrt_sparse_covariance");
 
-    cholmod_free_sparse(&cov, chol.chcommon);
+    cholmod_l_free_sparse(&cov, chol.chcommon);
 
     gt.start("atm_sim_apply_sparse_covariance");
 
@@ -994,7 +994,7 @@ void toast::atm_sim_compute_slice(
 
     gt.stop("atm_sim_apply_sparse_covariance");
 
-    cholmod_free_sparse(&sqrt_cov, chol.chcommon);
+    cholmod_l_free_sparse(&sqrt_cov, chol.chcommon);
 
     return;
 }
