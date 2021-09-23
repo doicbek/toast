@@ -13,9 +13,11 @@ from .dist import distribute_uniform
 from .mpi import MPI
 
 from pshmem.utils import mpi_data_type
+from pshmem import MPIShared, MPILock
 
 from .utils import (
     Logger,
+    Environment,
     AlignedI8,
     AlignedU8,
     AlignedI16,
@@ -35,14 +37,17 @@ class PixelDistribution(object):
     """Class representing the distribution of submaps.
 
     This object is used to describe the properties of a pixelization scheme and which
-    "submaps" are strored on each process.  The size of the submap can be tuned to
+    "submaps" are stored on each process.  The size of the submap can be tuned to
     balance storage (smaller submap size means fewer wasted pixels stored) and ease of
     indexing (larger submap size means faster global-to-local pixel lookups).
+
+    If None is passed for local_submaps, then it is assumed that ALL submaps are to
+    be allocated and used.
 
     Args:
         n_pix (int): the total number of pixels.
         n_submap (int): the number of submaps to use.
-        local_submaps (array): the list of local submaps (integers).
+        local_submaps (array): the list of local submaps (integers) or None.
         comm (mpi4py.MPI.Comm): The MPI communicator or None.
 
     """
@@ -59,8 +64,43 @@ class PixelDistribution(object):
         if self._n_pix % self._n_submap != 0:
             self._n_pix_submap += 1
 
-        self._local_submaps = local_submaps
+        # Query whether shared memory use is enabled and store that value for the
+        # life of the PixelDistribution instance.
+        env = Environment.get()
+        self.use_shared = env.pixel_shmem()
+
         self._comm = comm
+        self._nodecomm = None
+        self._rankcomm = None
+        self._node = None
+        self._node_rank = None
+        self._node_procs = None
+        self._local_submaps = local_submaps
+
+        # If we are using shared memory, create the on-node communicator and get
+        # the superset of submaps across all processes on the node.
+        if self.use_shared and self._comm is not None:
+            self._nodecomm = self._comm.Split_type(MPI.COMM_TYPE_SHARED, 0)
+            self._node_rank = self._nodecomm.rank
+            self._node_procs = self._nodecomm.size
+            self._node = self._comm.rank // self._node_procs
+            self._rankcomm = self._comm.Split(self._node_rank, self._node)
+            temp_submaps = set()
+            all_submaps = self._nodecomm.allgather(local_submaps)
+            full_sky = False
+            for psub in all_submaps:
+                if psub is None:
+                    # At least one of the processes has all submaps.
+                    full_sky = True
+                    break
+                for s in psub:
+                    temp_submaps.add(s)
+            if full_sky:
+                self._local_submaps = None
+            else:
+                self._local_submaps = np.array(
+                    list(sorted(temp_submaps)), dtype=np.int64
+                )
 
         self._glob2loc = None
         self._n_local = 0
@@ -69,10 +109,18 @@ class PixelDistribution(object):
             if np.max(self._local_submaps) > self._n_submap - 1:
                 raise RuntimeError("local submap indices out of range")
             self._n_local = len(self._local_submaps)
-            self._glob2loc = AlignedI64.zeros(self._n_submap)
-            self._glob2loc[:] = -1
-            for ilocal_submap, iglobal_submap in enumerate(self._local_submaps):
-                self._glob2loc[iglobal_submap] = ilocal_submap
+            if self.use_shared:
+                self._glob2loc = MPIShared((self._n_submap,), np.int64, self._nodecomm)
+                # Only one process on the node sets the values
+                if self._node_rank == 0:
+                    self._glob2loc.data[:] = -1
+                    for ilocal_submap, iglobal_submap in enumerate(self._local_submaps):
+                        self._glob2loc[iglobal_submap] = ilocal_submap
+            else:
+                self._glob2loc = AlignedI64.zeros(self._n_submap)
+                self._glob2loc[:] = -1
+                for ilocal_submap, iglobal_submap in enumerate(self._local_submaps):
+                    self._glob2loc[iglobal_submap] = ilocal_submap
 
         self._submap_owners = None
         self._owned_submaps = None
@@ -92,6 +140,8 @@ class PixelDistribution(object):
             local_eq = False
         if self._comm is not None and other._comm is None:
             local_eq = False
+        if self.use_shared != other.use_shared:
+            local_eq = False
         if self._comm is not None:
             comp = MPI.Comm.Compare(self._comm, other._comm)
             if comp not in (MPI.IDENT, MPI.CONGRUENT):
@@ -109,10 +159,18 @@ class PixelDistribution(object):
         are no longer being used and you are about to delete the object.
 
         """
-        if hasattr(self, "_glob2loc"):
-            if self._glob2loc is not None:
+        if hasattr(self, "_glob2loc") and self._glob2loc is not None:
+            if self.use_shared:
+                self._glob2loc.close()
+            else:
                 self._glob2loc.clear()
-                del self._glob2loc
+            del self._glob2loc
+        if hasattr(self, "_nodecomm") and (self._nodecomm is not None):
+            self._nodecomm.Free()
+            self._nodecomm = None
+        if hasattr(self, "_rankcomm") and (self._rankcomm is not None):
+            self._rankcomm.Free()
+            self._rankcomm = None
 
     def __del__(self):
         self.clear()
@@ -121,6 +179,16 @@ class PixelDistribution(object):
     def comm(self):
         """(mpi4py.MPI.Comm): The MPI communicator used (or None)"""
         return self._comm
+
+    @property
+    def node_comm(self):
+        """(mpi4py.MPI.Comm): The MPI on-node communicator used (or None)"""
+        return self._nodecomm
+
+    @property
+    def rank_comm(self):
+        """(mpi4py.MPI.Comm): The MPI communicator across nodes (or None)"""
+        return self._rankcomm
 
     @property
     def n_pix(self):
@@ -171,7 +239,12 @@ class PixelDistribution(object):
             msg = "Global pixel indices exceed the maximum for the pixelization"
             log.error(msg)
             raise RuntimeError(msg)
-        return libtoast_global_to_local(gl, self._n_pix_submap, self._glob2loc)
+        if self._glob2loc is None:
+            return (gl // self._n_pix_submap, gl % self._n_pix_submap)
+        if self.use_shared:
+            return libtoast_global_to_local(gl, self._n_pix_submap, self._glob2loc.data)
+        else:
+            return libtoast_global_to_local(gl, self._n_pix_submap, self._glob2loc)
 
         # global_sm = np.floor_divide(gl, self._n_pix_submap, dtype=np.int64)
         # submap_pixel = np.mod(gl, self._n_pix_submap, dtype=np.int64)
@@ -196,9 +269,16 @@ class PixelDistribution(object):
             msg = "Global pixel indices exceed the maximum for the pixelization"
             log.error(msg)
             raise RuntimeError(msg)
-        local_sm, pixels = libtoast_global_to_local(
-            gl, self._n_pix_submap, self._glob2loc
-        )
+        if self._glob2loc is None:
+            return gl
+        if self.use_shared:
+            local_sm, pixels = libtoast_global_to_local(
+                gl, self._n_pix_submap, self._glob2loc.data
+            )
+        else:
+            local_sm, pixels = libtoast_global_to_local(
+                gl, self._n_pix_submap, self._glob2loc
+            )
         local_sm *= self._n_pix_submap
         pixels += local_sm
         return pixels
@@ -211,11 +291,16 @@ class PixelDistribution(object):
 
     @property
     def submap_owners(self):
-        """The owning process for every hit submap.
+        """The owning process for every submap.
 
         This information is used in several other operations, including serializing
         PixelData objects to a single process and also communication needed for
         reducing data globally.
+
+        Un-hit submaps have the owning process set to -1.
+
+        NOTE:  If we are using MPI shared memory for storage, the ranks specified
+        in the returned array are for the node rank communicator.
         """
         if self._submap_owners is not None:
             # Already computed
@@ -230,38 +315,54 @@ class PixelDistribution(object):
                 self._submap_owners[self._local_submaps] = 0
         else:
             # Need to compute it.
-            local_hit_submaps = np.zeros(self._n_submap, dtype=np.uint8)
-            local_hit_submaps[self._local_submaps] = 1
+            def assign_submaps(comm):
+                """Helper function to set the owners across a communicator.
+                This is used across either the full communicator or (in the
+                case of using shared memory, only on the node rank comm).
+                """
+                local_hit_submaps = np.zeros(self._n_submap, dtype=np.uint8)
+                local_hit_submaps[self._local_submaps] = 1
 
-            hit_submaps = None
-            if self._comm.rank == 0:
-                hit_submaps = np.zeros(self._n_submap, dtype=np.uint8)
+                hit_submaps = None
+                if comm.rank == 0:
+                    hit_submaps = np.zeros(self._n_submap, dtype=np.uint8)
 
-            self._comm.Reduce(local_hit_submaps, hit_submaps, op=MPI.LOR, root=0)
-            del local_hit_submaps
+                comm.Reduce(local_hit_submaps, hit_submaps, op=MPI.LOR, root=0)
+                del local_hit_submaps
 
-            if self._comm.rank == 0:
-                total_hit_submaps = np.sum(hit_submaps.astype(np.int32))
-                tdist = distribute_uniform(total_hit_submaps, self._comm.size)
+                if comm.rank == 0:
+                    total_hit_submaps = np.sum(hit_submaps.astype(np.int32))
+                    tdist = distribute_uniform(total_hit_submaps, comm.size)
 
-                # The target number of submaps per process
-                target = [x[1] for x in tdist]
+                    # The target number of submaps per process
+                    target = [x[1] for x in tdist]
 
-                # Assign the submaps in rank order.  This ensures better load
-                # distribution when serializing some operations and also reduces needed
-                # memory copies when using Alltoallv.
-                proc_offset = 0
-                proc = 0
-                for sm in range(self._n_submap):
-                    if hit_submaps[sm] > 0:
-                        self._submap_owners[sm] = proc
-                        proc_offset += 1
-                        if proc_offset >= target[proc]:
-                            proc += 1
-                            proc_offset = 0
-                del hit_submaps
+                    # Assign the submaps in rank order.  This ensures better load
+                    # distribution when serializing some operations and also reduces
+                    # needed memory copies when using Alltoallv.
+                    proc_offset = 0
+                    proc = 0
+                    for sm in range(self._n_submap):
+                        if hit_submaps[sm] > 0:
+                            self._submap_owners[sm] = proc
+                            proc_offset += 1
+                            if proc_offset >= target[proc]:
+                                proc += 1
+                                proc_offset = 0
+                    del hit_submaps
+                comm.Bcast(self._submap_owners, root=0)
 
-            self._comm.Bcast(self._submap_owners, root=0)
+            if self.use_shared:
+                if self._node_rank == 0:
+                    assign_submaps(self._rankcomm)
+                # Convert owning processes on the rank communicator to
+                # process rank on the full one
+                self._submap_owners *= self._node_procs
+                # Broadcast across each node
+                self._nodecomm.Bcast(self._submap_owners, root=0)
+            else:
+                assign_submaps(self._comm)
+
         return self._submap_owners
 
     @property
