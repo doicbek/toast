@@ -301,16 +301,16 @@ class PixelDistribution(object):
 
         NOTE:  If we are using MPI shared memory for storage, the ranks specified
         in the returned array are for the node rank communicator.
+
         """
         if self._submap_owners is not None:
             # Already computed
             return self._submap_owners
 
-        self._submap_owners = np.empty(self._n_submap, dtype=np.int32)
-        self._submap_owners[:] = -1
-
         if self._comm is None:
             # Trivial case
+            self._submap_owners = np.empty(self._n_submap, dtype=np.int32)
+            self._submap_owners[:] = -1
             if self._local_submaps is not None and len(self._local_submaps) > 0:
                 self._submap_owners[self._local_submaps] = 0
         else:
@@ -320,6 +320,9 @@ class PixelDistribution(object):
                 This is used across either the full communicator or (in the
                 case of using shared memory, only on the node rank comm).
                 """
+                self._submap_owners = np.empty(self._n_submap, dtype=np.int32)
+                self._submap_owners[:] = -1
+
                 local_hit_submaps = np.zeros(self._n_submap, dtype=np.uint8)
                 local_hit_submaps[self._local_submaps] = 1
 
@@ -355,11 +358,14 @@ class PixelDistribution(object):
             if self.use_shared:
                 if self._node_rank == 0:
                     assign_submaps(self._rankcomm)
-                # Convert owning processes on the rank communicator to
-                # process rank on the full one
-                self._submap_owners *= self._node_procs
-                # Broadcast across each node
-                self._nodecomm.Bcast(self._submap_owners, root=0)
+                else:
+                    # For processes which are not rank zero on each node,
+                    # the ownership information has no meaning, since no
+                    # communication is done on those processes.  We set this
+                    # to boolean False (rather than None) to indicate that
+                    # the calculation has already been done (to avoid the
+                    # check at the beginning of this function).
+                    self._submap_owners = False
             else:
                 assign_submaps(self._comm)
 
@@ -377,10 +383,20 @@ class PixelDistribution(object):
                 [x for x, y in enumerate(owners) if y == 0], dtype=np.int32
             )
         else:
-            self._owned_submaps = np.array(
-                [x for x, y in enumerate(owners) if y == self._comm.rank],
-                dtype=np.int32,
-            )
+            if self.use_shared:
+                if self._node_rank == 0:
+                    self._owned_submaps = np.array(
+                        [x for x, y in enumerate(owners) if y == self._node],
+                        dtype=np.int32,
+                    )
+                else:
+                    # No concept of ownership
+                    self._owned_submaps = False
+            else:
+                self._owned_submaps = np.array(
+                    [x for x, y in enumerate(owners) if y == self._comm.rank],
+                    dtype=np.int32,
+                )
         return self._owned_submaps
 
     @property
@@ -394,57 +410,46 @@ class PixelDistribution(object):
             - The receive counts for the Alltoallv submap gather
             - The locations in the receive buffer of each submap.
 
+        If using shared memory, the processes not participating in
+        communication return boolean False and for the node root processes
+        the returned quantities are in terms of the rank communicator
+        across nodes.
+
         """
         if self._alltoallv_info is not None:
             # Already computed
             return self._alltoallv_info
 
-        owners = self.submap_owners
-        our_submaps = self.owned_submaps
-
-        send_counts = None
-        send_displ = None
-        recv_counts = None
-        recv_displ = None
-        recv_locations = None
-
-        if self._comm is None:
-            recv_counts = len(self._local_submaps) * np.ones(1, dtype=np.int32)
-            recv_displ = np.zeros(1, dtype=np.int32)
-            recv_locations = dict()
-            for offset, sm in enumerate(self._local_submaps):
-                recv_locations[sm] = np.array([offset], dtype=np.int32)
-            send_counts = len(self._local_submaps) * np.ones(1, dtype=np.int32)
-            send_displ = np.zeros(1, dtype=np.int32)
-        else:
-            # Compute the other "contributing" processes that have submaps which we own.
-            # Also track the receive buffer offsets for each owned submap.
-            send = [list() for x in range(self._comm.size)]
+        def compute_info(comm):
+            # Helper to compute the quantities for the comm that is involved
+            owners = self.submap_owners
+            our_submaps = self.owned_submaps
+            snd = [list() for x in range(comm.size)]
             for sm in self._local_submaps:
                 # Tell the owner of this submap that we are a contributor
-                send[owners[sm]].append(sm)
-            recv = self._comm.alltoall(send)
+                snd[owners[sm]].append(sm)
+            rcv = comm.alltoall(snd)
 
-            recv_counts = np.zeros(self._comm.size, dtype=np.int32)
-            recv_displ = np.zeros(self._comm.size, dtype=np.int32)
-            recv_locations = dict()
+            rcv_counts = np.zeros(comm.size, dtype=np.int32)
+            rcv_displ = np.zeros(comm.size, dtype=np.int32)
+            rcv_locations = dict()
 
             offset = 0
-            for proc, sms in enumerate(recv):
-                recv_displ[proc] = offset
+            for proc, sms in enumerate(rcv):
+                rcv_displ[proc] = offset
                 for sm in sms:
-                    if sm not in recv_locations:
-                        recv_locations[sm] = list()
-                    recv_locations[sm].append(offset)
-                    recv_counts[proc] += 1
+                    if sm not in rcv_locations:
+                        rcv_locations[sm] = list()
+                    rcv_locations[sm].append(offset)
+                    rcv_counts[proc] += 1
                     offset += 1
 
-            for sm in list(recv_locations.keys()):
-                recv_locations[sm] = np.array(recv_locations[sm], dtype=np.int32)
+            for sm in list(rcv_locations.keys()):
+                rcv_locations[sm] = np.array(rcv_locations[sm], dtype=np.int32)
 
             # Compute the Alltoallv send offsets in terms of submaps
-            send_counts = np.zeros(self._comm.size, dtype=np.int32)
-            send_displ = np.zeros(self._comm.size, dtype=np.int32)
+            snd_counts = np.zeros(comm.size, dtype=np.int32)
+            snd_displ = np.zeros(comm.size, dtype=np.int32)
             offset = 0
             last_offset = 0
             last_own = -1
@@ -452,22 +457,41 @@ class PixelDistribution(object):
                 if last_own != owners[sm]:
                     # Moving on to next owning process...
                     if last_own >= 0:
-                        send_displ[last_own] = last_offset
+                        snd_displ[last_own] = last_offset
                         last_offset = offset
-                send_counts[owners[sm]] += 1
+                snd_counts[owners[sm]] += 1
                 offset += 1
                 last_own = owners[sm]
             if last_own >= 0:
                 # Finish up last process
-                send_displ[last_own] = last_offset
+                snd_displ[last_own] = last_offset
+            return (
+                snd_counts,
+                snd_displ,
+                rcv_counts,
+                rcv_displ,
+                rcv_locations,
+            )
 
-        self._alltoallv_info = (
-            send_counts,
-            send_displ,
-            recv_counts,
-            recv_displ,
-            recv_locations,
-        )
+        if self._comm is None:
+            recv_locations = dict()
+            for offset, sm in enumerate(self._local_submaps):
+                recv_locations[sm] = np.array([offset], dtype=np.int32)
+            self._alltoallv_info = (
+                len(self._local_submaps) * np.ones(1, dtype=np.int32),  # send_counts
+                np.zeros(1, dtype=np.int32),  # send_displ
+                len(self._local_submaps) * np.ones(1, dtype=np.int32),  # recv_counts
+                np.zeros(1, dtype=np.int32),  # recv_displ
+                recv_locations,
+            )
+        else:
+            if self.use_shared:
+                if self._node_rank == 0:
+                    self._alltoallv_info = compute_info(self._rankcomm)
+                else:
+                    self._alltoallv_info = False
+            else:
+                self._alltoallv_info = compute_info(self._comm)
 
         return self._alltoallv_info
 
@@ -548,8 +572,12 @@ class PixelData(object):
         )
         self._n_submap_value = self._dist.n_pix_submap * self._n_value
 
-        self.raw = self.storage_class.zeros(self._flatshape)
-        self.data = self.raw.array().reshape(self._shape)
+        if self._dist.use_shared:
+            self.raw = MPIShared(self._shape, self._dtype, self._dist._nodecomm)
+            self.data = self.raw.data
+        else:
+            self.raw = self.storage_class.zeros(self._flatshape)
+            self.data = self.raw.array().reshape(self._shape)
 
         # Allreduce quantites
         self._all_comm_submap = None
@@ -580,7 +608,10 @@ class PixelData(object):
         if hasattr(self, "data"):
             del self.data
         if hasattr(self, "raw"):
-            self.raw.clear()
+            if self._dist.use_shared:
+                self.raw.close()
+            else:
+                self.raw.clear()
             del self.raw
         if hasattr(self, "receive"):
             del self.receive
@@ -652,7 +683,13 @@ class PixelData(object):
 
         """
         dup = PixelData(self.distribution, self.dtype, n_value=self.n_value)
-        dup.raw[:] = self.raw
+        if self._dist.use_shared:
+            if self._dist._node_rank == 0:
+                dup.raw.set(self.data, offset=(0, 0, 0), fromrank=0)
+            else:
+                dup.raw.set(None, offset=(0, 0, 0), fromrank=0)
+        else:
+            dup.raw[:] = self.raw
         return dup
 
     def comm_nsubmap(self, bytes):
@@ -679,25 +716,30 @@ class PixelData(object):
         """Check that allreduce buffers exist and create them if needed."""
         # Allocate persistent send / recv buffers that only change if number of submaps
         # change.
-        if self._all_comm_submap is not None:
-            # We have already done a reduce...
-            if n_submap == self._all_comm_submap:
-                # Already allocated with correct size
-                return
-            else:
-                # Delete the old buffers.
-                del self._all_send
-                self._all_send_raw.clear()
-                del self._all_send_raw
-                del self._all_recv
-                self._all_recv_raw.clear()
-                del self._all_recv_raw
-        # Allocate with the new size
-        self._all_comm_submap = n_submap
-        self._all_recv_raw = self.storage_class.zeros(n_submap * self._n_submap_value)
-        self._all_recv = self._all_recv_raw.array()
-        self._all_send_raw = self.storage_class.zeros(n_submap * self._n_submap_value)
-        self._all_send = self._all_send_raw.array()
+        if not self._dist.use_shared or self._dist._node_rank == 0:
+            if self._all_comm_submap is not None:
+                # We have already done a reduce...
+                if n_submap == self._all_comm_submap:
+                    # Already allocated with correct size
+                    return
+                else:
+                    # Delete the old buffers.
+                    del self._all_send
+                    self._all_send_raw.clear()
+                    del self._all_send_raw
+                    del self._all_recv
+                    self._all_recv_raw.clear()
+                    del self._all_recv_raw
+            # Allocate with the new size
+            self._all_comm_submap = n_submap
+            self._all_recv_raw = self.storage_class.zeros(
+                n_submap * self._n_submap_value
+            )
+            self._all_recv = self._all_recv_raw.array()
+            self._all_send_raw = self.storage_class.zeros(
+                n_submap * self._n_submap_value
+            )
+            self._all_send = self._all_send_raw.array()
 
     @function_timer
     def sync_allreduce(self, comm_bytes=10000000):
@@ -719,50 +761,58 @@ class PixelData(object):
         dist = self._dist
         nsub = dist.n_submap
 
-        sendview = self._all_send.reshape(
-            (comm_submap, dist.n_pix_submap, self._n_value)
-        )
+        if not self._dist.use_shared or self._dist._node_rank == 0:
+            sendview = self._all_send.reshape(
+                (comm_submap, dist.n_pix_submap, self._n_value)
+            )
+            recvview = self._all_recv.reshape(
+                (comm_submap, dist.n_pix_submap, self._n_value)
+            )
 
-        recvview = self._all_recv.reshape(
-            (comm_submap, dist.n_pix_submap, self._n_value)
-        )
+            owners = dist.submap_owners
 
-        owners = dist.submap_owners
+            submap_off = 0
+            ncomm = comm_submap
 
-        submap_off = 0
-        ncomm = comm_submap
+            gt = GlobalTimers.get()
 
-        gt = GlobalTimers.get()
+            while submap_off < nsub:
+                if submap_off + ncomm > nsub:
+                    ncomm = nsub - submap_off
+                if np.sum(owners[submap_off : submap_off + ncomm]) != -ncomm:
+                    # At least one submap has some hits.  Do the allreduce.
+                    # Otherwise we would skip this buffer to avoid reducing a
+                    # bunch of zeros.
+                    for c in range(ncomm):
+                        glob = submap_off + c
+                        if glob in dist.local_submaps:
+                            # copy our data in.
+                            loc = dist.global_submap_to_local[glob]
+                            sendview[c, :, :] = self.data[loc, :, :]
 
-        while submap_off < nsub:
-            if submap_off + ncomm > nsub:
-                ncomm = nsub - submap_off
-            if np.sum(owners[submap_off : submap_off + ncomm]) != -ncomm:
-                # At least one submap has some hits.  Do the allreduce.
-                # Otherwise we would skip this buffer to avoid reducing a
-                # bunch of zeros.
-                for c in range(ncomm):
-                    glob = submap_off + c
-                    if glob in dist.local_submaps:
-                        # copy our data in.
-                        loc = dist.global_submap_to_local[glob]
-                        sendview[c, :, :] = self.data[loc, :, :]
+                    gt.start("PixelData.sync_allreduce MPI Allreduce")
+                    if self._dist.use_shared:
+                        dist._rankcomm.Allreduce(
+                            self._all_send, self._all_recv, op=MPI.SUM
+                        )
+                    else:
+                        dist.comm.Allreduce(self._all_send, self._all_recv, op=MPI.SUM)
+                    gt.stop("PixelData.sync_allreduce MPI Allreduce")
 
-                gt.start("PixelData.sync_allreduce MPI Allreduce")
-                dist.comm.Allreduce(self._all_send, self._all_recv, op=MPI.SUM)
-                gt.stop("PixelData.sync_allreduce MPI Allreduce")
+                    for c in range(ncomm):
+                        glob = submap_off + c
+                        if glob in dist.local_submaps:
+                            # copy the reduced data
+                            loc = dist.global_submap_to_local[glob]
+                            self.data[loc, :, :] = recvview[c, :, :]
 
-                for c in range(ncomm):
-                    glob = submap_off + c
-                    if glob in dist.local_submaps:
-                        # copy the reduced data
-                        loc = dist.global_submap_to_local[glob]
-                        self.data[loc, :, :] = recvview[c, :, :]
+                    self._all_send.fill(0)
+                    self._all_recv.fill(0)
 
-                self._all_send.fill(0)
-                self._all_recv.fill(0)
+                submap_off += ncomm
 
-            submap_off += ncomm
+        if self._dist.use_shared:
+            self._dist._nodecomm.barrier()
 
         return
 
