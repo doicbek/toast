@@ -54,5 +54,7 @@ install(FILES
     stokes_weights.py
     pixels_healpix.py
     filterbin.py
+    noise_estimation.py
+    noise_estimation_utils.py
     DESTINATION ${PYTHON_SITE}/toast/ops
 )

@@ -57,5 +57,6 @@ install(FILES
     ops_sss.py
     ops_demodulate.py
     ops_filterbin.py
+    ops_noise_estim.py
     DESTINATION ${PYTHON_SITE}/toast/tests
 )
