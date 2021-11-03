@@ -36,6 +36,8 @@ from ._libtoast import (
     vfast_erfinv,
 )
 
+from ._libtoast import inplace_weighted_sum
+
 from .mpi import MPI, use_mpi
 
 
@@ -168,8 +170,7 @@ try:
     import psutil
 
     def memreport(msg="", comm=None):
-        """ Gather and report the amount of allocated, free and swapped system memory
-        """
+        """Gather and report the amount of allocated, free and swapped system memory"""
         if psutil is None:
             return
         vmem = psutil.virtual_memory()._asdict()

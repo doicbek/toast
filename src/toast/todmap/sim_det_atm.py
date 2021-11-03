@@ -181,8 +181,7 @@ class OpSimAtmosphere(Operator):
             site = self._get_from_obs("site_id", obs)
             weather = self._get_from_obs("weather", obs)
 
-            # Get the observation time span and initialize the weather
-            # object if one is provided.
+            # Get the observation time span
             times = tod.local_times()
             tmin = times[0]
             tmax = times[-1]
@@ -193,7 +192,6 @@ class OpSimAtmosphere(Operator):
                 tmax_tot = comm.allreduce(tmax, op=MPI.MAX)
             tmin_tot = np.floor(tmin_tot)
             tmax_tot = np.ceil(tmax_tot)
-            weather.set(site, self._realization, tmin_tot)
 
             key1, key2, counter1, counter2 = self._get_rng_keys(obs)
 
@@ -377,9 +375,7 @@ class OpSimAtmosphere(Operator):
     def _plot_snapshots(
         self, sim, prefix, obsname, scan_range, tmin, tmax, comm, rmin, rmax
     ):
-        """ Create snapshots of the atmosphere
-
-        """
+        """Create snapshots of the atmosphere"""
         from ..vis import set_backend
 
         set_backend()
@@ -474,7 +470,7 @@ class OpSimAtmosphere(Operator):
         return
 
     def _get_from_obs(self, name, obs):
-        """ Extract value for name from observation.
+        """Extract value for name from observation.
 
         If name is not defined in observation, raise an exception.
 

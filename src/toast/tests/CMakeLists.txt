@@ -18,6 +18,7 @@ install(FILES
     intervals.py
     tod_satellite.py
     ops_applygain.py
+    ops_crosstalk.py
     ops_simnoise.py
     cov.py
     ops_pmat.py
@@ -30,6 +31,7 @@ install(FILES
     psd_math.py
     ops_madam.py
     ops_mapmaker.py
+    ops_filterbin.py
     map_satellite.py
     map_ground.py
     binned.py

@@ -8,6 +8,7 @@ import os
 import numpy as np
 from scipy.constants import h, k
 
+from ..mpi import MPI
 from ..timing import function_timer, Timer
 from ..utils import Logger, Environment
 
@@ -29,8 +30,7 @@ TCMB = 2.725
 
 
 def add_atmosphere_args(parser):
-    """ Add the atmospheric simulation arguments
-    """
+    """Add the atmospheric simulation arguments"""
     parser.add_argument(
         "--atmosphere",
         required=False,
@@ -220,6 +220,36 @@ def add_atmosphere_args(parser):
         action="store_true",
         help="Only simulate unflagged samples.",
     )
+    parser.add_argument(
+        "--weather-pwv",
+        required=False,
+        type=np.float,
+        help="Override randomized PWV [mm]",
+    )
+    parser.add_argument(
+        "--weather-temperature",
+        required=False,
+        type=np.float,
+        help="Override randomized air temperature [K]",
+    )
+    parser.add_argument(
+        "--weather-pressure",
+        required=False,
+        type=np.float,
+        help="Override randomized surface pressure [Pa]",
+    )
+    parser.add_argument(
+        "--weather-west-wind",
+        required=False,
+        type=np.float,
+        help="Override randomized West wind [m/s]",
+    )
+    parser.add_argument(
+        "--weather-south-wind",
+        required=False,
+        type=np.float,
+        help="Override randomized South wind [m/s]",
+    )
     # Common flag mask may already be added
     try:
         parser.add_argument(
@@ -247,14 +277,13 @@ def add_atmosphere_args(parser):
 
 @function_timer
 def simulate_atmosphere(args, comm, data, mc, cache_name=None, verbose=True):
-    """ Simulate atmospheric signal and add it to `cache_name`.
-    """
+    """Simulate atmospheric signal and add it to `cache_name`."""
     if not args.simulate_atmosphere:
         return
     log = Logger.get()
     timer = Timer()
     timer.start()
-    if comm.world_rank == 0 and verbose:
+    if comm.world_rank == 0:
         log.info("Simulating atmosphere")
         if args.atm_cache and not os.path.isdir(args.atm_cache):
             try:
@@ -262,8 +291,6 @@ def simulate_atmosphere(args, comm, data, mc, cache_name=None, verbose=True):
             except FileExistsError:
                 pass
 
-    # TK:  is this right?  Or do we want to break out options for different types of
-    # verbosity?
     write_debug = False
     if args.atm_verbosity > 1:
         write_debug = True
@@ -309,7 +336,6 @@ def simulate_atmosphere(args, comm, data, mc, cache_name=None, verbose=True):
             ystep=50,
             zstep=50,
             nelem_sim_max=30000,
-            verbosity=args.atm_verbosity,
             z0_center=args.atm_z0_center,
             z0_sigma=args.atm_z0_sigma,
             apply_flags=args.atm_apply_flags,
@@ -420,23 +446,33 @@ def scale_atmosphere_by_frequency(
             absorption = np.hstack(todcomm.allgather(my_absorption))
             loading = np.hstack(todcomm.allgather(my_loading))
         for det in tod.local_dets:
-            try:
-                # Use detector bandpass from the focalplane
-                center = focalplane[det]["bandcenter_ghz"]
-                width = focalplane[det]["bandwidth_ghz"]
-            except Exception:
-                # Use default values for the entire focalplane
-                if freq is None:
-                    raise RuntimeError(
-                        "You must supply the nominal frequency if bandpasses "
-                        "are not available"
-                    )
-                center = freq
-                width = 0.2 * freq
-            nstep = 101
-            # Interpolate the absorption coefficient to do a top hat
-            # integral across the bandpass
-            det_freqs = np.linspace(center - width / 2, center + width / 2, nstep)
+            if "bandpass_transmission" in focalplane[det]:
+                # We have full bandpasses for the detector
+                bandpass_freqs = focalplane[det]["bandpass_freq_ghz"]
+                bandpass = focalplane[det]["bandpass_transmission"]
+            else:
+                if "bandcenter_ghz" in focalplane[det]:
+                    # Use detector bandpass from the focalplane
+                    center = focalplane[det]["bandcenter_ghz"]
+                    width = focalplane[det]["bandwidth_ghz"]
+                else:
+                    # Use default values for the entire focalplane
+                    if freq is None:
+                        raise RuntimeError(
+                            "You must supply the nominal frequency if bandpasses "
+                            "are not available"
+                        )
+                    center = freq
+                    width = 0.2 * freq
+                bandpass_freqs = np.array([center - width / 2, center + width / 2])
+                bandpass = np.ones(2)
+            # Normalize and interpolate the bandpass
+            nstep = 1001
+            fmin, fmax = bandpass_freqs[0], bandpass_freqs[-1]
+            det_freqs = np.linspace(fmin, fmax, nstep)
+            det_bandpass = np.interp(det_freqs, bandpass_freqs, bandpass)
+            det_bandpass /= np.sum(det_bandpass)
+            # Interpolate absorption and loading to bandpass frequencies
             absorption_det = np.interp(det_freqs, freqs, absorption)
             loading_det = np.interp(det_freqs, freqs, loading)
             # From brightness to thermodynamic units
@@ -446,8 +482,8 @@ def scale_atmosphere_by_frequency(
             rj2cmb *= 0.5763279042527544
             absorption_det *= rj2cmb
             # Average across the bandpass
-            absorption_det = np.mean(absorption_det)
-            loading_det = np.mean(loading_det)
+            absorption_det = np.sum(absorption_det * det_bandpass)
+            loading_det = np.sum(loading_det * det_bandpass)
             cachename = "{}_{}".format(cache_name, det)
             ref = tod.cache.reference(cachename)
             ref *= absorption_det
@@ -514,4 +550,42 @@ def update_atmospheric_noise_weights(args, comm, data, freq, mc, verbose=False):
     timer.stop()
     if comm.world_rank == 0 and verbose:
         timer.report("Atmosphere weighting")
+    return
+
+
+@function_timer
+def draw_weather(args, comm, data, mc=0, verbose=True):
+    """ Draw the weather parameters for this Monte Carlo realization
+    """
+    timer = Timer()
+    timer.start()
+
+    for obs in data.obs:
+        tod = obs["tod"]
+        site = obs["site_id"]
+        weather = obs["weather"]
+
+        # Get the observation start and initialize the weather
+        # object
+        start_time = obs["start_time"]
+        weather.set(site, mc, start_time)
+
+        # Check for optional overrides
+        if args.weather_pwv is not None:
+            weather._pwv = args.weather_pwv
+        if args.weather_temperature is not None:
+            weather._air_temperature = args.weather_temperature
+        if args.weather_pressure is not None:
+            weather._surface_pressure = args.weather_pressure
+        if args.weather_west_wind is not None:
+            weather._west_wind = args.weather_west_wind
+        if args.weather_south_wind is not None:
+            weather._south_wind = args.weather_south_wind
+
+    if verbose:
+        if comm.comm_world is not None:
+            comm.comm_world.barrier()
+        timer.stop()
+        if comm.world_rank == 0:
+            timer.report("draw_weather")
     return

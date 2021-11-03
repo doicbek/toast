@@ -16,25 +16,31 @@ use_mpi = None
 MPI = None
 
 if use_mpi is None:
-    # Special handling for running on a NERSC login node.  This is for convenience.
-    # The same behavior could be implemented with environment variables set in a
-    # shell resource file.
-    at_nersc = False
-    if "NERSC_HOST" in os.environ:
-        at_nersc = True
-    in_slurm = False
-    if "SLURM_JOB_NAME" in os.environ:
-        in_slurm = True
-    if not at_nersc or in_slurm:
-        try:
-            import mpi4py.MPI as MPI
+    # See if the user has explicitly disabled MPI.
+    if "MPI_DISABLE" in os.environ:
+        use_mpi = False
+    else:
+        # Special handling for running on a NERSC login node.  This is for convenience.
+        # The same behavior could be implemented with environment variables set in a
+        # shell resource file.
+        at_nersc = False
+        if "NERSC_HOST" in os.environ:
+            at_nersc = True
+        in_slurm = False
+        if "SLURM_JOB_NAME" in os.environ:
+            in_slurm = True
+        if (not at_nersc) or in_slurm:
+            try:
+                import mpi4py.MPI as MPI
 
-            use_mpi = True
-        except:
-            # There could be many possible exceptions raised...
-            log = Logger.get()
-            log.info("mpi4py not found- using serial operations only")
-            use_mpi = False
+                use_mpi = True
+            except:
+                # There could be many possible exceptions raised...
+                from ._libtoast import Logger
+
+                log = Logger.get()
+                log.info("mpi4py not found- using serial operations only")
+                use_mpi = False
 
 
 def get_world():
@@ -158,56 +164,47 @@ class Comm(object):
 
     @property
     def world_size(self):
-        """The size of the world communicator.
-        """
+        """The size of the world communicator."""
         return self._wsize
 
     @property
     def world_rank(self):
-        """The rank of this process in the world communicator.
-        """
+        """The rank of this process in the world communicator."""
         return self._wrank
 
     @property
     def ngroups(self):
-        """The number of process groups.
-        """
+        """The number of process groups."""
         return self._ngroups
 
     @property
     def group(self):
-        """The group containing this process.
-        """
+        """The group containing this process."""
         return self._group
 
     @property
     def group_size(self):
-        """The size of the group containing this process.
-        """
+        """The size of the group containing this process."""
         return self._gsize
 
     @property
     def group_rank(self):
-        """The rank of this process in the group communicator.
-        """
+        """The rank of this process in the group communicator."""
         return self._grank
 
     @property
     def comm_world(self):
-        """The world communicator.
-        """
+        """The world communicator."""
         return self._wcomm
 
     @property
     def comm_group(self):
-        """The communicator shared by processes within this group.
-        """
+        """The communicator shared by processes within this group."""
         return self._gcomm
 
     @property
     def comm_rank(self):
-        """The communicator shared by processes with the same group_rank.
-        """
+        """The communicator shared by processes with the same group_rank."""
         return self._rcomm
 
     def __repr__(self):

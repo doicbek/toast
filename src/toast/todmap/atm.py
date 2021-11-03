@@ -509,8 +509,7 @@ class AtmSim(object):
         return status
 
     def _get_slice(self, ind_start, ind_stop):
-        """Identify a manageable slice of compressed indices to simulate next.
-        """
+        """Identify a manageable slice of compressed indices to simulate next."""
         log = Logger.get()
 
         # Move element counter to the end of the most recent simulated slice
@@ -626,6 +625,9 @@ class AtmSim(object):
         # Wind is parallel to surface. Rotate to a frame where the scan
         # is across the X-axis.
 
+        # self._w *= 0.5  # DEBUG
+        # self._wdir += np.pi  # DEBUG
+
         eastward_wind = self._w * np.cos(self._wdir)
         northward_wind = self._w * np.sin(self._wdir)
 
@@ -641,6 +643,7 @@ class AtmSim(object):
 
         self._wx *= -1
         self._wy *= -1
+        self._wz *= -1
 
         if self._rank == 0:
             msg = "\nAtmospheric realization parameters:\n"
@@ -661,8 +664,7 @@ class AtmSim(object):
         return
 
     def get_volume(self):
-        """Compute the volume.
-        """
+        """Compute the volume."""
         log = Logger.get()
 
         # Trim zmax if rmax sets a more stringent limit
@@ -781,8 +783,7 @@ class AtmSim(object):
 
     @function_timer
     def compress_volume(self):
-        """Establish a mapping between full and observed volume indices.
-        """
+        """Establish a mapping between full and observed volume indices."""
         log = Logger.get()
 
         if self._rank == 0:
@@ -944,8 +945,7 @@ class AtmSim(object):
         pass
 
     def _meta_keys(self):
-        """Helper function to return the list of member variables to read / write.
-        """
+        """Helper function to return the list of member variables to read / write."""
         return list(
             [
                 ("nn", int),
@@ -1053,17 +1053,28 @@ class AtmSim(object):
         if self._rank == 0:
             log = Logger.get()
 
-            hf = h5py.File(cachefile, "r")
-            # Read metadata
-            meta = hf.attrs
-            for k, tp in self._meta_keys():
-                # Copy the metadata value into a dictionary, casting to correct type
-                mdata[k] = tp(meta[k])
-            log.debug("Loaded metadata for {}".format(rname))
+            try:
+                hf = h5py.File(cachefile, "r")
+                # Read metadata
+                meta = hf.attrs
+                for k, tp in self._meta_keys():
+                    # Copy the metadata value into a dictionary, casting to correct type
+                    mdata[k] = tp(meta[k])
+                log.debug("Loaded metadata for {}".format(rname))
+            except Exception as e:
+                print(
+                    f"ERROR: failed to load cached atmosphere realization"
+                    f" from {cachefile}. Will simulate again.",
+                    flush=True,
+                )
+                mdata = None
 
         # Broadcast the metadata
         if self._comm is not None:
             mdata = self._comm.bcast(mdata, root=0)
+
+        if mdata is None:
+            return
 
         # Copy the metadata into class instance member variables
         for k, tp in self._meta_keys():

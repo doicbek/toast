@@ -27,6 +27,7 @@ set(toast_SOURCES
     src/toast_math_rng.cpp
     src/toast_math_qarray.cpp
     src/toast_math_fft.cpp
+    src/toast_math_fma.cpp
     src/toast_math_healpix.cpp
     src/toast_map_cov.cpp
     src/toast_fod_psd.cpp
@@ -44,12 +45,13 @@ set(toast_SOURCES
     tests/toast_test_rng.cpp
     tests/toast_test_qarray.cpp
     tests/toast_test_fft.cpp
+    tests/toast_test_fma.cpp
     tests/toast_test_healpix.cpp
     tests/toast_test_cov.cpp
     tests/toast_test_polyfilter.cpp
 )
 
-add_library(toast ${versioncpp} ${toast_SOURCES})
+add_library(toast OBJECT ${versioncpp} ${toast_SOURCES})
 
 target_include_directories(toast BEFORE PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -105,6 +107,21 @@ if(CHOLMOD_FOUND)
     endif (METIS_FOUND)
 endif(CHOLMOD_FOUND)
 
+# Link to our FFT libraries
+
+if(MKL_FOUND)
+    target_compile_definitions(toast PRIVATE HAVE_MKL=1)
+    target_include_directories(toast PUBLIC "${MKL_INCLUDE_DIRS}")
+    target_link_libraries(toast "${MKL_LIBRARIES}")
+    # If we are using GNU compilers, we will need to internally set the threading layer
+    # to use GNU.  Otherwise, assume we are using Intel threads.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_definitions(toast PRIVATE USE_MKL_GNU_THREADS=1)
+    else()
+        target_compile_definitions(toast PRIVATE USE_MKL_INTEL_THREADS=1)
+    endif()
+endif(MKL_FOUND)
+
 if(FFTW_FOUND)
     target_compile_definitions(toast PRIVATE HAVE_FFTW=1)
     target_include_directories(toast PUBLIC "${FFTW_INCLUDE_DIRS}")
@@ -113,6 +130,8 @@ if(FFTW_FOUND)
         target_compile_definitions(toast PRIVATE HAVE_FFTW_THREADS=1)
     endif(FFTW_DOUBLE_THREADS_LIB_FOUND)
 endif(FFTW_FOUND)
+
+# LAPACK / BLAS
 
 if(LAPACK_FOUND)
     target_compile_definitions(toast PRIVATE HAVE_LAPACK=1)
@@ -124,18 +143,14 @@ if(LAPACK_FOUND)
     target_link_libraries(toast "${BLAS_LIBRARIES}")
 endif(LAPACK_FOUND)
 
-# FIXME: restore MKL linking here after testing on a machine with Intel
-# compilers.
-
-
 # Installation
 
-install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+#install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # Hardcode this to "lib" for now, since lib32/lib64 is a pain
 # to use on many systems.
 #install(TARGETS toast DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(TARGETS toast DESTINATION lib)
+#install(TARGETS toast DESTINATION lib)
 
 # Add the serial unit test executable
 

@@ -3,12 +3,13 @@
 # This minimum version is mostly set in order to get a newer version
 # of the FindMPI check.  Note that you can easily install a newer cmake version
 # using conda or pip.
-cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.12 FATAL_ERROR)
 
 foreach(policy
     CMP0048
     CMP0074
     CMP0077
+    CMP0063
   )
   if(POLICY ${policy})
     cmake_policy(SET ${policy} NEW)
@@ -23,6 +24,9 @@ project(toast VERSION ${MAJMIN_VERSION} LANGUAGES C CXX)
 # Force C++11
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Set symbol visibility to hidden to be consistent with pybind11
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 # Auxiliary files
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
@@ -49,6 +53,7 @@ if(NOT TOAST_STATIC_DEPS AND NOT $ENV{TOAST_STATIC_DEPS} STREQUAL "")
   set(TOAST_STATIC_DEPS $ENV{TOAST_STATIC_DEPS})
 endif()
 
+# OpenMP
 find_package(OpenMP)
 
 if(TOAST_STATIC_DEPS)
@@ -58,10 +63,26 @@ if(TOAST_STATIC_DEPS)
     set(SUITESPARSE_USE_STATIC_LIBS TRUE)
 endif()
 
-find_package(BLAS)
+# First look for MKL, since that will provide both FFT support and BLAS/LAPACK
+find_package(MKL)
+
+if(MKL_FOUND)
+    # Use MKL for BLAS / LAPACK
+    set(BLAS_LIBRARIES "${MKL_LIBRARIES}")
+    set(LAPACK_LIBRARIES "${MKL_LIBRARIES}")
+    set(BLAS_FOUND TRUE)
+    set(LAPACK_FOUND TRUE)
+else()
+    # Search for FFTW instead
+    find_package(FFTW)
+    if(NOT FFTW_FOUND)
+        message(FATAL_ERROR "Could not find a supported FFT library (MKL or FFTW)")
+    endif()
+    find_package(BLAS)
+    find_package(LAPACK)
+endif()
 
 if(BLAS_FOUND)
-    find_package(LAPACK)
     if(LAPACK_FOUND)
         find_package(LAPACKnames)
     else()
@@ -74,8 +95,6 @@ else()
         message(FATAL_ERROR "Could not find a working BLAS installation")
     endif()
 endif()
-
-find_package(FFTW)
 
 find_package(AATM)
 

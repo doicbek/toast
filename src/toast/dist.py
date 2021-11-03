@@ -99,7 +99,7 @@ def distribute_discrete(sizes, groups, pow=1.0, breaks=None):
 
     if len(dist) != groups:
         raise RuntimeError(
-            "Number of distributed groups different than " "number requested"
+            "Number of distributed groups different than number requested"
         )
     return dist
 
@@ -290,13 +290,11 @@ class Data(object):
 
     @property
     def comm(self):
-        """The toast.Comm over which the data is distributed.
-        """
+        """The toast.Comm over which the data is distributed."""
         return self._comm
 
     def clear(self):
-        """Clear the list of observations.
-        """
+        """Clear the list of observations."""
         for ob in self.obs:
             ob.clear()
         return

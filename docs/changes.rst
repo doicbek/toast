@@ -3,10 +3,89 @@
 Change Log
 -------------------------
 
-2.3.8 (Unreleased)
+2.3.15 (Unreleased)
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 * Nothing yet
+
+2.3.14 (2021-10-10)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* Update pybind11 to 2.7.1 to fix conda-forge builds (PR `#490`_).
+
+.. _`#490`: https://github.com/hpc4cmb/toast/pull/490
+
+2.3.13 (2021-09-29)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* Add support for generating observation matrices (PR `#374`_).
+* Allow the user to set fixed weather simulation parameters (PR `#379`_).
+* Optimizations in the ground telescope simulation code (PR `#386`_).
+* Support gain template fitting in the map making (PR `#381`_).
+* Fixes to scheduling observations of solar system objects (PR `#408`_).
+* Add support for simulating detector cross talk (PR `#380`_).
+* Add support for common mode filtering (PR `#429`_).
+
+.. _`#374`: https://github.com/hpc4cmb/toast/pull/374
+.. _`#379`: https://github.com/hpc4cmb/toast/pull/379
+.. _`#386`: https://github.com/hpc4cmb/toast/pull/386
+.. _`#381`: https://github.com/hpc4cmb/toast/pull/381
+.. _`#408`: https://github.com/hpc4cmb/toast/pull/408
+.. _`#380`: https://github.com/hpc4cmb/toast/pull/380
+.. _`#429`: https://github.com/hpc4cmb/toast/pull/429
+
+2.3.12 (2020-11-12)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* Fix typo in MKL cmake checks which broke OS X builds with MKL.
+* Fix typo in toast_ground_schedule.py pipeline.
+
+2.3.11 (2020-11-12)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* Restore support for directly using Intel MKL for FFTs (PR `#371`_, `#372`_).
+* Fixed bug in wind velocity during atmosphere simulations.
+
+.. _`#371`: https://github.com/hpc4cmb/toast/pull/371
+.. _`#372`: https://github.com/hpc4cmb/toast/pull/372
+
+2.3.10 (2020-10-15)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* Run serial unit tests without MPI.  Fix bug in ground filter (PR `#370`_).
+
+.. _`#370`: https://github.com/hpc4cmb/toast/pull/370
+
+2.3.9 (2020-10-15)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* Add stand-alone benchmarking tool (PR `#365`_).
+* Update wheels to use latest OpenBLAS and SuiteSparse (PR `#368`_).
+* Tweaks to atmosphere simulation based on calibration campaign (PR `#367`_).
+* Add support for 2D polynomial filtering across focalplane (PR `#366`_).
+* Ground scheduler support for elevation modulated scans (PR `#364`_).
+* Add better dictionary interface to Cache class (PR `#363`_).
+* Support simulating basic non-ideal HWP response (PR `#362`_).
+* Ground scheduler support for fixed elevations and partial scans (PR `#361`_).
+* Additional check for NULL plan returned from FFTW (PR `#360`_).
+
+.. _`#360`: https://github.com/hpc4cmb/toast/pull/360
+.. _`#361`: https://github.com/hpc4cmb/toast/pull/361
+.. _`#362`: https://github.com/hpc4cmb/toast/pull/362
+.. _`#363`: https://github.com/hpc4cmb/toast/pull/363
+.. _`#364`: https://github.com/hpc4cmb/toast/pull/364
+.. _`#365`: https://github.com/hpc4cmb/toast/pull/365
+.. _`#366`: https://github.com/hpc4cmb/toast/pull/366
+.. _`#367`: https://github.com/hpc4cmb/toast/pull/367
+.. _`#368`: https://github.com/hpc4cmb/toast/pull/368
+
+2.3.8 (2020-06-27)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* Minor release focusing on build system changes to support packaging
+* Update bundled pybind11 and other fixes for wheels and conda packages (PR `#359`_).
+
+.. _`#359`: https://github.com/hpc4cmb/toast/pull/359
 
 2.3.7 (2020-06-13)
 ~~~~~~~~~~~~~~~~~~~~~~~~~

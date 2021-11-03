@@ -16,7 +16,7 @@ from .todmap_math import (
     dipole,
 )
 
-from .pointing import OpPointingHpix
+from .pointing import OpPointingHpix, OpMuellerPointingHpix
 
 from .sim_tod import (
     satellite_scanning,
@@ -47,3 +47,4 @@ from .mapsampler import MapSampler
 
 from .madam import OpMadam
 from .mapmaker import OpMapMaker
+from .filterbin import OpFilterBin

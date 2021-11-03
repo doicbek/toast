@@ -35,6 +35,7 @@ pybind11_add_module(_libtoast MODULE
     _libtoast_math_rng.cpp
     _libtoast_math_qarray.cpp
     _libtoast_math_fft.cpp
+    _libtoast_math_fma.cpp
     _libtoast_math_healpix.cpp
     _libtoast_fod_psd.cpp
     _libtoast_tod_filter.cpp
@@ -55,6 +56,8 @@ else()
     set(OMP_LIBS "")
 endif(OpenMP_CXX_FOUND)
 
+target_link_libraries(_libtoast PRIVATE toast "${OMP_LIBS}")
+
 if(AATM_FOUND)
     target_compile_definitions(_libtoast PRIVATE HAVE_AATM=1)
     target_include_directories(_libtoast PUBLIC "${AATM_INCLUDE_DIRS}")
@@ -64,8 +67,6 @@ if(CHOLMOD_FOUND)
     target_compile_definitions(_libtoast PRIVATE HAVE_CHOLMOD=1)
     target_include_directories(_libtoast PUBLIC "${CHOLMOD_INCLUDE_DIR}")
 endif(CHOLMOD_FOUND)
-
-target_link_libraries(_libtoast PRIVATE toast "${OMP_LIBS}")
 
 # Include path to the toast headers
 target_include_directories(_libtoast BEFORE PRIVATE
@@ -91,6 +92,7 @@ install(FILES
     fft.py
     healpix.py
     weather.py
+    schedule.py
     "RELEASE"
     DESTINATION ${PYTHON_SITE}/toast
 )

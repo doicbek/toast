@@ -12,7 +12,7 @@ from .timing import function_timer
 
 
 class Weather(object):
-    """ TOAST Weather objects allow sampling weather parameters.
+    """TOAST Weather objects allow sampling weather parameters.
 
     The weather parameter distributions are read from site-specific
     TOAST weather files.  The files contain parameter distributions
@@ -21,7 +21,7 @@ class Weather(object):
     """
 
     def __init__(self, fname, site=0, realization=0, time=None):
-        """ Initialize a weather object
+        """Initialize a weather object
 
         Args:
             fname(str) : FITS file containing the parameter
@@ -43,51 +43,114 @@ class Weather(object):
             self.set_time(time)
         self._varindex = {}
 
-        hdulist = pf.open(self._fname, "readonly")
+        if self._fname is None:
+            # We will simulate fake weather information.
+            prob_start = 0.0
+            prob_stop = 1.0
+            nstep = 101
+            self._prob = np.linspace(prob_start, prob_stop, nstep)
 
-        # Build the probability axis of the cumulative distribution
-        # function.  The CDF:s stored for every month, hour and variable
-        # all assume the same probability axis.
-        prob_start = hdulist[1].header["probstrt"]
-        prob_stop = hdulist[1].header["probstop"]
-        nstep = hdulist[1].header["nstep"]
-        self._prob = np.linspace(prob_start, prob_stop, nstep)
-
-        # Load the CDF:s.  One entry per month.
-        self._monthly_cdf = []
-        ivar = 0
-        for month in range(12):
-            self._monthly_cdf.append([])
-            hdu = hdulist[1 + month]
-            # One entry for every hour
-            for hour in range(24):
-                self._monthly_cdf[month].append({})
-            # and one entry for every weather variable:
-            #  TQI   : ice water
-            #  TQL   : liquid water
-            #  TQV   : water vapor
-            #  QV10M : specific humidity
-            #  PS    : surface pressure
-            #  TS    : surface temperature
-            #  T10M  : air temperature at 10m
-            #  U10M  : eastward wind at 10m
-            #  V10M  : northward wind at 10m
-            for col in hdu.columns:
-                name = col.name
-                if name not in self._varindex:
-                    self._varindex[name] = ivar
-                    ivar += 1
+            self._monthly_cdf = []
+            ivar = 0
+            for month in range(12):
+                self._monthly_cdf.append([])
+                # One entry for every hour
                 for hour in range(24):
-                    self._monthly_cdf[month][hour][name] = hdu.data.field(name)[hour]
+                    self._monthly_cdf[month].append({})
+                # and one entry for every weather variable:
+                #  TQI   : ice water
+                #  TQL   : liquid water
+                #  TQV   : water vapor
+                #  QV10M : specific humidity
+                #  PS    : surface pressure
+                #  TS    : surface temperature
+                #  T10M  : air temperature at 10m
+                #  U10M  : eastward wind at 10m
+                #  V10M  : northward wind at 10m
+                name = "TQI"
+                self._varindex[name] = 0
+                for hour in range(24):
+                    self._monthly_cdf[month][hour][name] = 0.0
+                name = "TQL"
+                self._varindex[name] = 1
+                for hour in range(24):
+                    self._monthly_cdf[month][hour][name] = 0.0
+                name = "TQV"
+                self._varindex[name] = 2
+                for hour in range(24):
+                    self._monthly_cdf[month][hour][name] = 0.2
+                name = "QV10M"
+                self._varindex[name] = 3
+                for hour in range(24):
+                    self._monthly_cdf[month][hour][name] = 0.00015
+                name = "PS"
+                self._varindex[name] = 4
+                for hour in range(24):
+                    self._monthly_cdf[month][hour][name] = 58200.0
+                name = "TS"
+                self._varindex[name] = 5
+                for hour in range(24):
+                    self._monthly_cdf[month][hour][name] = 263.0
+                name = "T10M"
+                self._varindex[name] = 6
+                for hour in range(24):
+                    self._monthly_cdf[month][hour][name] = 263.0
+                name = "U10M"
+                self._varindex[name] = 7
+                for hour in range(24):
+                    self._monthly_cdf[month][hour][name] = -3.0
+                name = "V10M"
+                self._varindex[name] = 8
+                for hour in range(24):
+                    self._monthly_cdf[month][hour][name] = -7.0
+        else:
+            hdulist = pf.open(self._fname, "readonly")
 
-        hdulist.close()
+            # Build the probability axis of the cumulative distribution
+            # function.  The CDF:s stored for every month, hour and variable
+            # all assume the same probability axis.
+            prob_start = hdulist[1].header["probstrt"]
+            prob_stop = hdulist[1].header["probstop"]
+            nstep = hdulist[1].header["nstep"]
+            self._prob = np.linspace(prob_start, prob_stop, nstep)
+
+            # Load the CDF:s.  One entry per month.
+            self._monthly_cdf = []
+            ivar = 0
+            for month in range(12):
+                self._monthly_cdf.append([])
+                hdu = hdulist[1 + month]
+                # One entry for every hour
+                for hour in range(24):
+                    self._monthly_cdf[month].append({})
+                # and one entry for every weather variable:
+                #  TQI   : ice water
+                #  TQL   : liquid water
+                #  TQV   : water vapor
+                #  QV10M : specific humidity
+                #  PS    : surface pressure
+                #  TS    : surface temperature
+                #  T10M  : air temperature at 10m
+                #  U10M  : eastward wind at 10m
+                #  V10M  : northward wind at 10m
+                for col in hdu.columns:
+                    name = col.name
+                    if name not in self._varindex:
+                        self._varindex[name] = ivar
+                        ivar += 1
+                    for hour in range(24):
+                        self._monthly_cdf[month][hour][name] = hdu.data.field(name)[
+                            hour
+                        ]
+
+            hdulist.close()
 
         self._reset_vars()
 
         return
 
     def set(self, site, realization, time=None):
-        """ Set the weather object state.
+        """Set the weather object state.
 
         Args:
             site(int) : Site index.
@@ -95,6 +158,12 @@ class Weather(object):
             time : POSIX timestamp.
 
         """
+        if (
+                self.site == site and
+                self.realization == realization and
+                self._time == time
+        ):
+            return
         self.site = site
         self.realization = realization
         if time is not None:
@@ -104,9 +173,7 @@ class Weather(object):
         return
 
     def _reset_vars(self):
-        """ Reset the cached random variables.
-
-        """
+        """Reset the cached random variables."""
         self._ice_water = None
         self._liquid_water = None
         self._pwv = None
@@ -118,7 +185,7 @@ class Weather(object):
         self._south_wind = None
 
     def set_time(self, time):
-        """ Set the observing time.
+        """Set the observing time.
 
         Args:
             time : POSIX timestamp.
@@ -136,7 +203,7 @@ class Weather(object):
 
     @function_timer
     def _draw(self, name):
-        """ Return a random parameter value.
+        """Return a random parameter value.
 
         Return a random value for preset variable and time.
 
@@ -165,7 +232,7 @@ class Weather(object):
 
     @property
     def ice_water(self):
-        """ Total precipitable ice water [kg/m^2] (also [mm]).
+        """Total precipitable ice water [kg/m^2] (also [mm]).
 
         Ice water column at the observing site at the preset time and
         for the preset realization.
@@ -177,7 +244,7 @@ class Weather(object):
 
     @property
     def liquid_water(self):
-        """ Total precipitable liquid water [kg/m^2] (also [mm]).
+        """Total precipitable liquid water [kg/m^2] (also [mm]).
 
         Liquid water column at the observing site at the preset time and
         for the preset realization.
@@ -189,7 +256,7 @@ class Weather(object):
 
     @property
     def pwv(self):
-        """ Total precipitable water vapor [kg/m^2] (also [mm]).
+        """Total precipitable water vapor [kg/m^2] (also [mm]).
 
         Water vapor column at the observing site at the preset time and
         for the preset realization.
@@ -201,7 +268,7 @@ class Weather(object):
 
     @property
     def humidity(self):
-        """ 10-meter specific humidity [kg/kg]
+        """10-meter specific humidity [kg/kg]
 
         Water vapor concentration at the observing site 10 meters above
         ground at the preset time and for the preset realization.
@@ -213,7 +280,7 @@ class Weather(object):
 
     @property
     def surface_pressure(self):
-        """ Surface pressure [Pa].
+        """Surface pressure [Pa].
 
         Surface at the observing site at the preset time and for the
         preset realization.
@@ -225,7 +292,7 @@ class Weather(object):
 
     @property
     def surface_temperature(self):
-        """ Surface skin temperature [K].
+        """Surface skin temperature [K].
 
         Surface temperature at the observing site at the preset time and
         for the preset realization.
@@ -237,7 +304,7 @@ class Weather(object):
 
     @property
     def air_temperature(self):
-        """ 10-meter air temperature [K].
+        """10-meter air temperature [K].
 
         Air temperature at the observing site 10 meters above ground
         at the preset time and for the preset realization.
@@ -249,7 +316,7 @@ class Weather(object):
 
     @property
     def west_wind(self):
-        """ 10-meter eastward wind [m/s].
+        """10-meter eastward wind [m/s].
 
         Eastward wind at the observing site 10 meters above ground
         at the preset time and for the preset realization.
@@ -261,7 +328,7 @@ class Weather(object):
 
     @property
     def south_wind(self):
-        """ 10-meter northward wind [m/s].
+        """10-meter northward wind [m/s].
 
         Northward wind at the observing site 10 meters above ground
         at the preset time and for the preset realization.

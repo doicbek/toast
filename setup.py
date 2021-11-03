@@ -45,6 +45,17 @@ def find_compilers():
 
     return (cc, cxx)
 
+def parse_release(topdir):
+    # Helper function to parse the RELEASE file
+    ver = None
+    rel_file = os.path.join(topdir, "src", "toast", "RELEASE")
+    try:
+        with open(rel_file, "r") as f:
+            for line in f:
+                ver = line.rstrip()
+    except Exception:
+        print(f"Cannot parse release file '{rel_file}'")
+    return ver
 
 def get_version():
     # Run the underlying cmake command that generates the version file, and then
@@ -52,27 +63,33 @@ def get_version():
     # (not yet built) compiled code.
     topdir = Path(__file__).resolve().parent
     ver = None
-    try:
-        version_dir = os.path.join(topdir, "src", "libtoast")
-        # version_dir = os.path.join("src", "libtoast")
-        subprocess.check_call("cmake -P version.cmake", shell=True, cwd=version_dir)
-        version_cpp = os.path.join(version_dir, "version.cpp")
-        git_ver = None
-        rel_ver = None
-        with open(version_cpp, "r") as f:
-            for line in f:
-                mat = re.match(r'.*GIT_VERSION = "(.*)".*', line)
-                if mat is not None:
-                    git_ver = mat.group(1)
-                mat = re.match(r'.*RELEASE_VERSION = "(.*)".*', line)
-                if mat is not None:
-                    rel_ver = mat.group(1)
-        if (git_ver is not None) and (git_ver != ""):
-            ver = git_ver
-        else:
-            ver = rel_ver
-    except CalledProcessError:
-        raise RuntimeError("Cannot generate version!")
+    if "CIBUILDWHEEL" in os.environ:
+        # Short circuit the generation of the version- just parse the
+        # Release file.
+        ver = parse_release(topdir)
+    else:
+        try:
+            version_dir = os.path.join(topdir, "src", "libtoast")
+            # version_dir = os.path.join("src", "libtoast")
+            subprocess.check_call("cmake -P version.cmake", shell=True, cwd=version_dir)
+            version_cpp = os.path.join(version_dir, "version.cpp")
+            git_ver = None
+            rel_ver = None
+            with open(version_cpp, "r") as f:
+                for line in f:
+                    mat = re.match(r'.*GIT_VERSION = "(.*)".*', line)
+                    if mat is not None:
+                        git_ver = mat.group(1)
+                    mat = re.match(r'.*RELEASE_VERSION = "(.*)".*', line)
+                    if mat is not None:
+                        rel_ver = mat.group(1)
+            if (git_ver is not None) and (git_ver != ""):
+                ver = git_ver
+            else:
+                ver = rel_ver
+        except Exception:
+            # Just try to parse the RELEASE file directly
+            ver = parse_release(topdir)
     return ver
 
 
@@ -212,7 +229,7 @@ def readme():
 
 
 conf = dict()
-conf["name"] = "toast-cmb"
+conf["name"] = "toast"
 conf["description"] = "Time Ordered Astrophysics Scalable Tools"
 conf["long_description"] = readme()
 conf["long_description_content_type"] = "text/markdown"
@@ -221,7 +238,8 @@ conf["author_email"] = "tskisner.public@gmail.com"
 conf["license"] = "BSD"
 conf["url"] = "https://github.com/hpc4cmb/toast"
 conf["version"] = get_version()
-conf["python_requires"] = ">=3.6.0"
+conf["python_requires"] = ">=3.7.0"
+conf["setup_requires"] = (["wheel"],)
 conf["install_requires"] = [
     "cmake",
     "numpy",
@@ -244,9 +262,9 @@ conf["classifiers"] = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: BSD License",
     "Operating System :: POSIX",
-    "Programming Language :: Python :: 3.6",
     "Programming Language :: Python :: 3.7",
     "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
 

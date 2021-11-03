@@ -61,18 +61,8 @@ class OpAccumDiag(Operator):
             containing the pixel indices to use.
         weights (str): the name of the cache object (<weights>_<detector>)
             containing the pointing weights to use.
-        nside (int): NSIDE resolution for Healpix NEST ordered intensity map.
-        nest (bool): if True, use NESTED ordering.
-        mode (string): either "I" or "IQU"
-        cal (dict): dictionary of calibration values per detector. A None
-            value means a value of 1.0 for all detectors.
-        epsilon (dict): dictionary of cross-polar response per detector. A
-            None value means epsilon is zero for all detectors.
-        hwprpm: if None, a constantly rotating HWP is not included.  Otherwise
-            it is the rate (in RPM) of constant rotation.
-        hwpstep: if None, then a stepped HWP is not included.  Otherwise, this
-            is the step in degrees.
-        hwpsteptime: The time in minutes between HWP steps.
+        detectors (iterable):  List of detectors to process.  If None, use
+            all detectors.
     """
 
     def __init__(
@@ -89,6 +79,7 @@ class OpAccumDiag(Operator):
         pixels="pixels",
         weights="weights",
         apply_flags=True,
+        detectors=None,
     ):
 
         self._flag_name = flag_name
@@ -101,6 +92,7 @@ class OpAccumDiag(Operator):
         self._pixels = pixels
         self._weights = weights
         self._detweights = detweights
+        self._detectors = detectors
 
         # Ensure that the 3 different DistPixel objects have the same number
         # of pixels.
@@ -220,6 +212,8 @@ class OpAccumDiag(Operator):
                 commonflags = tod.local_common_flags(self._common_flag_name).copy()
 
             for det in tod.local_dets:
+                if self._detectors is not None and det not in self._detectors:
+                    continue
 
                 # get the pixels and weights from the cache
 
@@ -239,13 +233,13 @@ class OpAccumDiag(Operator):
                 if self._apply_flags:
                     gt.start("OpAccumDiag.exec.apply_flags")
                     # Don't change the cached pixel numbers
-                    pixels = pixels.copy()
+                    pixels = pixels.astype(np.int64).copy()
                     detflags = tod.local_flags(det, self._flag_name)
                     apply_flags_to_pixels(
-                        commonflags,
-                        self._common_flag_mask,
-                        detflags,
-                        self._flag_mask,
+                        commonflags.astype(np.uint8),
+                        np.uint8(self._common_flag_mask),
+                        detflags.astype(np.uint8),
+                        np.uint8(self._flag_mask),
                         pixels,
                     )
                     gt.stop("OpAccumDiag.exec.apply_flags")
@@ -284,9 +278,9 @@ class OpAccumDiag(Operator):
                         self._nsub,
                         self._subsize,
                         self._nnz,
-                        sm,
-                        lpix,
-                        weights.reshape(-1),
+                        sm.astype(np.int64),
+                        lpix.astype(np.int64),
+                        weights.reshape(-1).astype(np.float64),
                         detweight,
                         signal,
                         invnpp,
@@ -305,9 +299,9 @@ class OpAccumDiag(Operator):
                         self._nsub,
                         self._subsize,
                         self._nnz,
-                        sm,
-                        lpix,
-                        weights.reshape(-1),
+                        sm.astype(np.int64),
+                        lpix.astype(np.int64),
+                        weights.reshape(-1).astype(np.float64),
                         detweight,
                         invnpp,
                         hits,
@@ -321,9 +315,9 @@ class OpAccumDiag(Operator):
                         self._nsub,
                         self._subsize,
                         self._nnz,
-                        sm,
-                        lpix,
-                        weights.reshape(-1),
+                        sm.astype(np.int64),
+                        lpix.astype(np.int64),
+                        weights.reshape(-1).astype(np.float64),
                         detweight,
                         signal,
                         zmap,
@@ -334,7 +328,12 @@ class OpAccumDiag(Operator):
                     if hits is None:
                         hits = np.empty(shape=0, dtype=np.int64)
                     cov_accum_diag_hits(
-                        self._nsub, self._subsize, self._nnz, sm, lpix, hits
+                        self._nsub,
+                        self._subsize,
+                        self._nnz,
+                        sm.astype(np.int64),
+                        lpix.astype(np.int64),
+                        hits,
                     )
 
                 # print("det {}:".format(det))

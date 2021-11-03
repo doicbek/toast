@@ -7,18 +7,32 @@
 # bundled with our compiled extension.
 #
 
+set -e
+
 # Location of this script
 pushd $(dirname $0) >/dev/null 2>&1
 topdir=$(pwd)
 popd >/dev/null 2>&1
 
-# Install mpich and mpi4py
-yum -y update
-yum -y install mpich-3.2-devel.x86_64 mpich-3.2-autoload.x86_64
-pip install mpi4py
+# Install xz
+
+yum -y install xz
+
+# Install MPICH
+
+yum -y install mpich-devel mpich-autoload
+
+# Pick up mpich changes
+
+. /etc/profile
 
 # Get newer cmake with pip
+
 pip install cmake
+
+# Install mpi4py
+
+pip install mpi4py
 
 # Build options
 
@@ -34,9 +48,64 @@ MAKEJ=2
 
 PREFIX=/usr
 
+# libgmp
+
+gmp_version=6.2.1
+gmp_dir=gmp-${gmp_version}
+gmp_pkg=${gmp_dir}.tar.xz
+
+echo "Fetching libgmp"
+
+if [ ! -e ${gmp_pkg} ]; then
+    curl -SL https://ftp.gnu.org/gnu/gmp/${gmp_pkg} -o ${gmp_pkg}
+fi
+
+echo "Building libgmp..."
+
+rm -rf ${gmp_dir}
+tar xf ${gmp_pkg} \
+    && pushd ${gmp_dir} >/dev/null 2>&1 \
+    && CC="${CC}" CFLAGS="${CFLAGS}" \
+    ./configure \
+    --enable-static \
+    --disable-shared \
+    --with-pic \
+    --prefix="${PREFIX}" \
+    && make -j ${MAKEJ} \
+    && make install \
+    && popd >/dev/null 2>&1
+
+# libmpfr
+
+mpfr_version=4.1.0
+mpfr_dir=mpfr-${mpfr_version}
+mpfr_pkg=${mpfr_dir}.tar.xz
+
+echo "Fetching libmpfr"
+
+if [ ! -e ${mpfr_pkg} ]; then
+    curl -SL https://www.mpfr.org/mpfr-current/${mpfr_pkg} -o ${mpfr_pkg}
+fi
+
+echo "Building libmpfr..."
+
+rm -rf ${mpfr_dir}
+tar xf ${mpfr_pkg} \
+    && pushd ${mpfr_dir} >/dev/null 2>&1 \
+    && CC="${CC}" CFLAGS="${CFLAGS}" \
+    ./configure \
+    --enable-static \
+    --disable-shared \
+    --with-pic \
+    --with-gmp="${PREFIX}" \
+    --prefix="${PREFIX}" \
+    && make -j ${MAKEJ} \
+    && make install \
+    && popd >/dev/null 2>&1
+
 # Install Openblas
 
-openblas_version=0.3.9
+openblas_version=0.3.13
 openblas_dir=OpenBLAS-${openblas_version}
 openblas_pkg=${openblas_dir}.tar.gz
 
@@ -53,15 +122,16 @@ tar xzf ${openblas_pkg} \
     && pushd ${openblas_dir} >/dev/null 2>&1 \
     && make USE_OPENMP=1 NO_SHARED=1 \
     MAKE_NB_JOBS=${MAKEJ} \
-    CC="${CC}" FC="${FC}" DYNAMIC_ARCH=1 \
+    CC="${CC}" FC="${FC}" DYNAMIC_ARCH=1 TARGET=GENERIC \
     COMMON_OPT="${CFLAGS}" FCOMMON_OPT="${FCFLAGS}" \
     LDFLAGS="-fopenmp -lm" \
-    && make NO_SHARED=1 PREFIX="${PREFIX}" install \
+    && make NO_SHARED=1 DYNAMIC_ARCH=1 TARGET=GENERIC \
+    PREFIX="${PREFIX}" install \
     && popd >/dev/null 2>&1
 
 # Install FFTW
 
-fftw_version=3.3.8
+fftw_version=3.3.10
 fftw_dir=fftw-${fftw_version}
 fftw_pkg=${fftw_dir}.tar.gz
 
@@ -119,7 +189,7 @@ tar xzf ${aatm_pkg} \
 
 # Install SuiteSparse
 
-ssparse_version=5.7.2
+ssparse_version=5.10.1
 ssparse_dir=SuiteSparse-${ssparse_version}
 ssparse_pkg=${ssparse_dir}.tar.gz
 

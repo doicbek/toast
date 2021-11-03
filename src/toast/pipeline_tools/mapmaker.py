@@ -13,11 +13,11 @@ from ..timing import function_timer, Timer
 from ..utils import Logger, Environment
 
 from ..todmap import OpMapMaker
+from ..tod import OpPolyFilter
 
 
 def add_mapmaker_args(parser):
-    """ Add mapmaker arguments
-    """
+    """Add mapmaker arguments"""
     parser.add_argument(
         "--mapmaker-prefix",
         required=False,
@@ -26,7 +26,10 @@ def add_mapmaker_args(parser):
         dest="mapmaker_prefix",
     )
     parser.add_argument(
-        "--mapmaker-mask", required=False, help="Destriping mask", dest="mapmaker_mask",
+        "--mapmaker-mask",
+        required=False,
+        help="Destriping mask",
+        dest="mapmaker_mask",
     )
     parser.add_argument(
         "--mapmaker-weightmap",
@@ -59,6 +62,56 @@ def add_mapmaker_args(parser):
         dest="mapmaker_baseline_length",
     )
     parser.add_argument(
+        "--mapmaker-prefilter-order",
+        required=False,
+        type=np.int,
+        help="Polynomial prefiltering for mapmaker",
+        dest="mapmaker_prefilter_order",
+    )
+    parser.add_argument(
+        "--mapmaker-fourier2D-order",
+        required=False,
+        type=np.int,
+        help="Per sample 2D Fourier template order",
+        dest="mapmaker_fourier2D_order",
+    )
+    parser.add_argument(
+        "--mapmaker-fourier2D-subharmonics",
+        required=False,
+        action="store_true",
+        help="Fit linear modes along with Fourier templates",
+        dest="mapmaker_fourier2D_subharmonics",
+    )
+    parser.add_argument(
+        "--no-mapmaker-fourier2D-subharmonics",
+        required=False,
+        action="store_false",
+        help="Do not fit linear modes along with Fourier templates",
+        dest="mapmaker_fourier2D_subharmonics",
+    )
+    parser.add_argument(
+        "--mapmaker-gain-poly-order",
+        required=False,
+        help="Fit gain template with Legendre Polynomials",
+        dest="mapmaker_gain_poly_order",
+        type=np.int,
+    )
+    parser.add_argument(
+        "--mapmaker-calibration",
+        required=False,
+        action="store_true",
+        help="Calibrate for the fitted gain amplitudes before destriping",
+        dest="mapmaker_calibration",
+    )
+    parser.add_argument(
+        "--no-mapmaker-calibration",
+        required=False,
+        action="store_false",
+        help="Do not calibrate for the fitted gain amplitudes before destriping",
+        dest="mapmaker_calibration",
+    )
+    parser.set_defaults(mapmaker_fourier2D_subharmonics=False)
+    parser.add_argument(
         "--mapmaker-noisefilter",
         required=False,
         default=False,
@@ -66,6 +119,26 @@ def add_mapmaker_args(parser):
         help="Destripe with the noise filter enabled",
         dest="mapmaker_noisefilter",
     )
+
+    try:
+        parser.add_argument(
+            "--destripe",
+            required=False,
+            action="store_true",
+            help="Write destriped maps [default]",
+            dest="destripe",
+        )
+        parser.add_argument(
+            "--no-destripe",
+            required=False,
+            action="store_false",
+            help="Do not write destriped maps",
+            dest="destripe",
+        )
+        parser.set_defaults(destripe=True)
+    except argparse.ArgumentError:
+        pass
+
     try:
         parser.add_argument(
             "--binmap",
@@ -180,6 +253,21 @@ def add_mapmaker_args(parser):
     except argparse.ArgumentError:
         pass
 
+    parser.add_argument(
+        "--mapmaker",
+        required=False,
+        action="store_false",
+        help="Enable mapmaker (overrride --no-mapmaker)",
+        dest="no_mapmaker",
+    )
+    parser.add_argument(
+        "--no-mapmaker",
+        required=False,
+        action="store_true",
+        help="Disable mapmaker, regardless of other parameters",
+        dest="no_mapmaker",
+    )
+    parser.set_defaults(no_mapmaker=False)
     return
 
 
@@ -196,12 +284,18 @@ def apply_mapmaker(
     extra_prefix=None,
     verbose=True,
     bin_only=False,
+    gain_templatename=None,
 ):
+    if args.no_mapmaker:
+        return
     log = Logger.get()
     timer = Timer()
 
     if outpath is None:
         outpath = args.out
+
+    if not args.destripe:
+        bin_only = True
 
     file_root = args.mapmaker_prefix
     if extra_prefix is not None:
@@ -215,6 +309,25 @@ def apply_mapmaker(
     if telescope_data is None:
         telescope_data = [("all", data)]
 
+    if not bin_only and args.mapmaker_prefilter_order is not None:
+        timer.start()
+        if comm.world_rank == 0 and verbose:
+            print(
+                "Applying polynomial prefilter, order = {}".format(
+                    args.mapmaker_prefilter_order
+                ),
+                flush=True,
+            )
+        polyfilter = OpPolyFilter(
+            order=args.mapmaker_prefilter_order,
+            name=cache_name,
+            common_flag_mask=args.common_flag_mask,
+        )
+        polyfilter.exec(data)
+        timer.stop()
+        if comm.world_rank == 0 and verbose:
+            timer.report("Polynomial prefilter")
+
     for time_name, time_comm in time_comms:
         for tele_name, tele_data in telescope_data:
 
@@ -225,10 +338,12 @@ def apply_mapmaker(
                 baseline_length = None
                 write_binned = True
                 write_destriped = False
+                fourier2D_order = None
             else:
                 baseline_length = args.mapmaker_baseline_length
                 write_binned = args.write_binmap
                 write_destriped = True
+                fourier2D_order = args.mapmaker_fourier2D_order
 
             if len(time_name.split("-")) == 3:
                 # Special rules for daily maps
@@ -242,11 +357,46 @@ def apply_mapmaker(
                 write_binned = True
                 write_destriped = False
 
+            timer.clear()
             timer.start()
 
             if len(file_root) > 0 and not file_root.endswith("_"):
                 file_root += "_"
             prefix = "{}telescope_{}_time_{}_".format(file_root, tele_name, time_name)
+            if args.mapmaker_calibration:
+                if gain_templatename is None:
+                    raise ValueError(
+                        "Can't calibrate if the template signal is not specified"
+                    )
+                calibrator = OpMapMaker(
+                    nside=args.nside,
+                    nnz=3,
+                    name=cache_name,
+                    outdir=outpath,
+                    outprefix=prefix,
+                    write_hits=False,
+                    write_wcov_inv=False,
+                    write_wcov=False,
+                    write_binned=False,
+                    write_destriped=False,
+                    write_rcond=False,
+                    rcond_limit=1e-3,
+                    baseline_length=args.obs_time_h
+                    * 3600,  ## we calibrate for the whole observation length
+                    maskfile=args.mapmaker_mask,
+                    weightmapfile=args.mapmaker_weightmap,
+                    common_flag_mask=args.common_flag_mask,
+                    flag_mask=1,
+                    intervals="intervals",
+                    gain_templatename=gain_templatename,
+                    gain_poly_order=args.mapmaker_gain_poly_order,
+                    iter_min=3,
+                    iter_max=args.mapmaker_iter_max,
+                    use_noise_prior=False,
+                    pixels="pixels",
+                )
+
+                calibrator.exec(tele_data, time_comm)
 
             mapmaker = OpMapMaker(
                 nside=args.nside,
@@ -269,6 +419,8 @@ def apply_mapmaker(
                 flag_mask=1,
                 intervals="intervals",
                 subharmonic_order=None,
+                fourier2D_order=fourier2D_order,
+                fourier2D_subharmonics=args.mapmaker_fourier2D_subharmonics,
                 iter_min=3,
                 iter_max=args.mapmaker_iter_max,
                 use_noise_prior=args.mapmaker_noisefilter,

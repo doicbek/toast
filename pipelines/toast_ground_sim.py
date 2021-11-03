@@ -8,6 +8,7 @@
 This script runs a ground simulation and makes a map.
 """
 
+
 import os
 
 if "TOAST_STARTUP_DELAY" in os.environ:
@@ -20,6 +21,7 @@ if "TOAST_STARTUP_DELAY" in os.environ:
     #      flush=True)
     time.sleep(wait)
 
+import copy
 import sys
 import argparse
 import traceback
@@ -65,12 +67,14 @@ def parse_arguments(comm):
     pipeline_tools.add_todground_args(parser)
     pipeline_tools.add_pointing_args(parser)
     pipeline_tools.add_polyfilter_args(parser)
+    pipeline_tools.add_polyfilter2D_args(parser)
     pipeline_tools.add_groundfilter_args(parser)
     pipeline_tools.add_atmosphere_args(parser)
     pipeline_tools.add_noise_args(parser)
     pipeline_tools.add_gainscrambler_args(parser)
     pipeline_tools.add_madam_args(parser)
     pipeline_tools.add_mapmaker_args(parser)
+    pipeline_tools.add_filterbin_args(parser)
     pipeline_tools.add_sky_map_args(parser)
     pipeline_tools.add_pysm_args(parser)
     pipeline_tools.add_sss_args(parser)
@@ -161,7 +165,7 @@ def parse_arguments(comm):
 
 @function_timer
 def load_focalplanes(args, comm, schedules):
-    """ Attach a focalplane to each of the schedules.
+    """Attach a focalplane to each of the schedules.
 
     Args:
         schedules (list) :  List of Schedule instances.
@@ -213,7 +217,7 @@ def load_focalplanes(args, comm, schedules):
 
 @function_timer
 def create_observation(args, comm, telescope, ces, verbose=True):
-    """ Create a TOAST observation.
+    """Create a TOAST observation.
 
     Create an observation for the CES scan
 
@@ -259,6 +263,10 @@ def create_observation(args, comm, telescope, ces, verbose=True):
             el_nod=el_nod,
             start_with_elnod=args.start_with_el_nod,
             end_with_elnod=args.end_with_el_nod,
+            el_mod_step=args.el_mod_step_deg,
+            el_mod_rate=args.el_mod_rate_hz,
+            el_mod_amplitude=args.el_mod_amplitude_deg,
+            el_mod_sine=args.el_mod_sine,
             scanrate=args.scan_rate,
             scanrate_el=args.scan_rate_el,
             scan_accel=args.scan_accel,
@@ -288,7 +296,7 @@ def create_observation(args, comm, telescope, ces, verbose=True):
     )
     obs["tod"] = tod
     obs["baselines"] = None
-    obs["noise"] = noise
+    obs["noise"] = copy.deepcopy(noise)
     obs["id"] = int(ces.mjdstart * 10000)
     obs["intervals"] = tod.subscans
     obs["site"] = site
@@ -314,7 +322,7 @@ def create_observation(args, comm, telescope, ces, verbose=True):
 
 @function_timer
 def create_observations(args, comm, schedules):
-    """ Create and distribute TOAST observations for every CES in
+    """Create and distribute TOAST observations for every CES in
     schedules.
 
     Args:
@@ -379,7 +387,7 @@ def create_observations(args, comm, schedules):
 
 
 def setup_sigcopy(args):
-    """ Determine if an extra copy of the atmospheric signal is needed.
+    """Determine if an extra copy of the atmospheric signal is needed.
 
     When we simulate multichroic focal planes, the frequency-independent
     part of the atmospheric noise is simulated first and then the
@@ -480,6 +488,8 @@ def main():
 
     for mc in range(firstmc, firstmc + nsimu):
 
+        pipeline_tools.draw_weather(args, comm, data, mc)
+
         pipeline_tools.simulate_atmosphere(args, comm, data, mc, totalname)
 
         # Loop over frequencies with identical focal planes and identical
@@ -558,11 +568,31 @@ def main():
                     first_call=(mc == firstmc),
                 )
 
-            if args.apply_polyfilter or args.apply_groundfilter:
+            if (
+                args.filterbin_ground_order is not None
+                or args.filterbin_poly_order is not None
+            ):
+                pipeline_tools.apply_filterbin(
+                    args,
+                    comm,
+                    data,
+                    outpath,
+                    totalname_freq,
+                    time_comms=time_comms,
+                    telescope_data=telescope_data,
+                    first_call=(mc == firstmc),
+                )
 
+            if (
+                args.apply_polyfilter
+                or args.apply_polyfilter2D
+                or args.apply_groundfilter
+            ):
                 # Filter signal
 
                 pipeline_tools.apply_polyfilter(args, comm, data, totalname_freq)
+
+                pipeline_tools.apply_polyfilter2D(args, comm, data, totalname_freq)
 
                 pipeline_tools.apply_groundfilter(args, comm, data, totalname_freq)
 
